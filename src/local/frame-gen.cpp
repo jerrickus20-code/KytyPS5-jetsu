@@ -3835,6 +3835,15 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
         sl::ResourceTag(&output_resource, sl::kBufferTypeScalingOutputColor, sl::ResourceLifecycle::eValidUntilEvaluate, &output_extent),
     };
 	auto* sl_command = reinterpret_cast<sl::CommandBuffer*>(static_cast<VkCommandBuffer>(command));
+	// KYTY_LATE_DLSS_SKIP_EVAL=1: the copies are made but DLSS is not run, the game's picture stays (a crash bisection).
+	static const bool skip_eval = [] {
+		const char* value = std::getenv("KYTY_LATE_DLSS_SKIP_EVAL");
+		return value != nullptr && value[0] == '1';
+	}();
+	if (skip_eval) {
+		DirectLayout(command, g_late_image, vk::ImageLayout::eShaderReadOnlyOptimal);
+		return nullptr;
+	}
 	sl::Result result = g_api.set_tag_for_frame(*token, viewport, tags, static_cast<uint32_t>(std::size(tags)), sl_command);
 	if (Evaluated(result)) {
 		const sl::BaseStructure* inputs[] {&viewport};
