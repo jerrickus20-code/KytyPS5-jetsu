@@ -639,9 +639,10 @@ static void SetGraphicsDynamicParams(const CommandBuffer& buffer, const CommandS
 		}
 	}
 	static_assert(viewport_slots <= GraphicsDynamicStateShadow::MaxViewports);
-	// Late DLSS for a game without jitter: the scene passes (depth attached, the picture's size) are drawn a sub-pixel
-	// offset each frame, DLSS being told the same offset.
-	if (depth.image_id) {
+	// Late DLSS for a game without jitter: its 3D geometry (draws writing depth at the picture's size) is drawn a sub-pixel
+	// offset each frame, DLSS being told the same offset. Full-screen and tiled passes (lighting strips with depth attached
+	// but not written) keep their place: moved, their strips left gaps and overlaps.
+	if (depth.image_id && depth.depth_write_enable) {
 		float jitter_x = 0.0f, jitter_y = 0.0f;
 		if (FrameGen::LateJitter(rendering.width, rendering.height, jitter_x, jitter_y)) {
 			for (uint32_t i = 0; i < viewport_count; i++) {
