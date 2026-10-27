@@ -7,6 +7,7 @@
 #include "imgui.h"
 #include "kernel/memory.h"
 
+#include "local/frame-gen.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -638,9 +639,37 @@ uint64_t PerformanceOverlayRevision() noexcept {
 	return g_revision.load(std::memory_order_acquire);
 }
 
+// A line of the game's frame generation switches (F4 30 fps cap, F6 late DLSS: local/frame-gen.h) for a few seconds,
+// also with the overlay off.
+static float DrawFrameGenNotice(vk::Extent2D extent, const std::string& notice) {
+	const float scale = std::clamp(std::min(static_cast<float>(extent.width) / 1920.0f,
+	                                        static_cast<float>(extent.height) / 1080.0f),
+	                               0.75f, 1.5f);
+	ImGui::SetNextWindowPos({static_cast<float>(extent.width) - 12.0f * scale, 12.0f * scale},
+	                        ImGuiCond_Always, {1.0f, 0.0f});
+	ImGui::SetNextWindowBgAlpha(0.72f);
+	constexpr ImGuiWindowFlags FLAGS =
+	    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
+	    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+	    ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoBringToFrontOnFocus |
+	    ImGuiWindowFlags_AlwaysAutoResize;
+	ImGui::PushFont(nullptr, 15.0f * scale);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 8.0f * scale);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {10.0f * scale, 8.0f * scale});
+	if (ImGui::Begin("##kyty_framegen_notice", nullptr, FLAGS)) {
+		ImGui::TextUnformatted(notice.c_str());
+	}
+	const float bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y;
+	ImGui::End();
+	ImGui::PopStyleVar(2);
+	ImGui::PopFont();
+	return bottom;
+}
+
 float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent) {
+	const std::string frame_gen_notice = FrameGen::HudNotice();
 	if (!PerformanceOverlayEnabled()) {
-		return 0.0f;
+		return frame_gen_notice.empty() ? 0.0f : DrawFrameGenNotice(extent, frame_gen_notice);
 	}
 	EnsureSampler();
 
@@ -717,6 +746,13 @@ float DrawPerformanceOverlay(const GraphicContext& graphics, vk::Extent2D extent
 		} else {
 			ImGui::TextDisabled("Waiting for frames");
 		}
+		if (FrameGen::Enabled()) {
+			// DLSS-G's frames per presented one (about once a second), and the late DLSS state.
+			const auto* quality = FrameGen::QualityLabel();
+			ImGui::TextDisabled("DLSS-G %ux%s%s", std::max(FrameGen::PresentedFrames(), 1u),
+			                    quality[0] != '\0' ? "  |  " : "", quality);
+		}
+		if (!frame_gen_notice.empty()) ImGui::TextUnformatted(frame_gen_notice.c_str());
 		DrawFrameGraph(shown.history, shown.history_count, (details ? 330.0f : 260.0f) * scale,
 		               46.0f * scale);
 		if (details) {

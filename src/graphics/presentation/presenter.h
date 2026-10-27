@@ -35,6 +35,10 @@ public:
 	[[nodiscard]] bool           IsHdrSupported() const noexcept;
 	[[nodiscard]] bool           NeedsSystemOverlayRefresh() const noexcept;
 	[[nodiscard]] RenderContext& Renderer() const noexcept;
+	// The 30 fps cap (FrameGen::FlipRateFloor) holds the frames of the game's 3D view only (movies advance a frame per
+	// flip: capped, they played at half speed).
+	[[nodiscard]] static bool    FlipRateApplies(const Frame& frame) noexcept;
+	[[nodiscard]] static bool    GeneratesFrames() noexcept;
 	void                         Present(Frame& frame);
 	void                         Present(std::span<const Layer> layers);
 	void                         ClearLayer(int bus);

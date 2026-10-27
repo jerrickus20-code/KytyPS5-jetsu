@@ -21,6 +21,7 @@
 #include "graphics/presentation/window/windowInternal.h"
 #include "kytyGitVersion.h"
 #include "libs/controller.h"
+#include "local/frame-gen.h"
 #include "loader/systemContent.h"
 
 #include <SDL3/SDL.h>
@@ -523,6 +524,24 @@ void WindowContext::ProcessEvent(double time_s) {
 					Controller::CycleKeyboardPlayer();
 				}
 				return;
+			// F4: the 30 fps cap on or off; F12: the performance overlay (as F2, with the DLSS-G line); F6: late DLSS on or off (Shift+F6: the NIS
+			// sharpening). local/frame-gen.h keeps them for the next start (KYTY_TOGGLE_FILE).
+			case SDLK_F4:
+				if (pressed) Libs::Graphics::FrameGen::Toggle(Libs::Graphics::FrameGen::Switch::Cap);
+				return;
+			case SDLK_F12:
+				if (pressed) TogglePerformanceOverlay();
+				return;
+			case SDLK_F6:
+				if (pressed) {
+					using Libs::Graphics::FrameGen::Switch;
+					const bool shift = (event->key.mod & SDL_KMOD_SHIFT) != 0;
+					const bool ctrl  = (event->key.mod & SDL_KMOD_CTRL) != 0;
+					Libs::Graphics::FrameGen::Toggle(ctrl    ? (shift ? Switch::NisSofter : Switch::NisSharper)
+					                                 : shift ? Switch::Nis
+					                                         : Switch::Dlss);
+				}
+				return;
 #if defined(__APPLE__)
 			case SDLK_P:
 				if ((event->key.mod & SDL_KMOD_GUI) == 0) {
@@ -873,6 +892,11 @@ static void WindowCreate(WindowContext& context) {
 	if (std::getenv("KYTY_BORDERLESS") != nullptr) {
 		window_flags |= static_cast<uint32_t>(SDL_WINDOW_BORDERLESS);
 	}
+#endif
+#if defined(_WIN32)
+	// KYTY_FRAMEGEN: Streamline must be initialized before SDL loads Vulkan with the window: it then becomes the Vulkan
+	// loader (the instance, the device and the swapchain are made through it).
+	Libs::Graphics::FrameGen::Initialize();
 #endif
 	context.window = SDL_CreateWindow(KYTY_SDL_WINDOW_CAPTION, width, height, window_flags);
 

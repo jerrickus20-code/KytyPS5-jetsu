@@ -45,6 +45,7 @@
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "local/frame-gen.h"
 
 #include <algorithm>
 #include <array>
@@ -3983,6 +3984,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	CommitStats::StepMark(CommitStats::Step::PrepStages);
 	CommitStats::Mark(CommitStats::Phase::PrepareBindings);
+	// The game's G-buffer draws: the camera DLSS-G takes from their vertex shader's constants (local/frame-gen.h).
+	if (FrameGen::Enabled() && !mesh_active && state.vertex_info[0].stage) {
+		FrameGen::OnDraw(state.vertex_info[0].stage.program->shader_hash,
+		                 state.vertex_info[0].stage.resources->flattened_srt);
+	}
 	const auto stages = std::span {descriptor_stages.data(), stage_count};
 	{
 		KYTY_PROFILER_DETAIL_BLOCK("Draw::PrepareGraphicsBindings");

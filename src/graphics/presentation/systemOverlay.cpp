@@ -21,6 +21,7 @@
 #include "loader/systemContent.h"
 #include "stb_image.h"
 
+#include "local/frame-gen.h"
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <array>
@@ -1799,7 +1800,8 @@ struct SystemOverlay::Impl {
 		const auto now = Clock::now();
 		if (!has_overlay && !g_trophy_notification_active.load(std::memory_order_acquire) &&
 		    !g_splash_active.load(std::memory_order_acquire) &&
-		    !GetHostInputTouchPadVisualState().enabled && !PerformanceOverlayEnabled()) {
+		    !GetHostInputTouchPadVisualState().enabled && !PerformanceOverlayEnabled() &&
+		    Libs::Graphics::FrameGen::HudNotice().empty()) {
 			return false;
 		}
 		const auto prepared_session = snapshot.session;

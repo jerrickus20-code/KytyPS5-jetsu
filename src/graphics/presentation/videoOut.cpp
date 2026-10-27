@@ -25,6 +25,7 @@
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/presentation/performanceOverlay.h"
 #include "graphics/presentation/presenter.h"
+#include "local/frame-gen.h"
 #include "graphics/presentation/renderDoc.h"
 #include "kernel/eventQueueFilters.h"
 #include "kernel/pthread.h"
@@ -204,6 +205,7 @@ struct VideoOutConfig {
 	VideoOutConfig*                     master      = nullptr;
 	uint32_t                            slave_count = 0;
 	int                                 flip_rate   = 0;
+	uint64_t                            last_flip_vblank = 0; // vblank_status.count at the last flip
 	uint64_t                            output_mode = VIDEO_OUT_OUTPUT_MODE_DEFAULT;
 	float                               gamma       = 1.0f;
 	VideoOutFlipStatus                  flip_status;
@@ -496,9 +498,34 @@ static int DeleteVideoOutEvent(int handle, EventQueue::KernelEqueue eq, VideoOut
 	return result == LibKernel::KERNEL_ERROR_ENOENT ? OK : result;
 }
 
-static bool IsFlipDueLocked(const VideoOutConfig& cfg, uint64_t generation) {
+// The 30 fps cap (F4 in the game, local/frame-gen.h FrameGen::FlipRateFloor; KYTY_FLIP_RATE=1 or 2 as well): at least 2 or
+// 3 vblanks between the flips of the game's 3D view (30 or 20 fps at 60 Hz), a steady frame rate for frame generation. The
+// vblanks keep their rate, and so does the game's clock. Unlike the game's own sceVideoOutSetFlipRate (flips only on every
+// 2nd vblank), a late frame waits for the next vblank, not for the next even one. Movies advance a frame per flip: only
+// frames of the game's 3D view are capped (Presenter::FlipRateApplies).
+static int FlipRateFloor() {
+	return Libs::Graphics::FrameGen::FlipRateFloor();
+}
+
+// Frame generation above 60 Hz: the game's frames keep 60 (KYTY_FRAMEGEN_BASE=<Hz>: another rate, 0: none). DLSS-G paces
+// the frames it generates from the intervals between the game's own.
+static int FrameGenFloor() {
+	static const int floor = [] {
+		const char* value = std::getenv("KYTY_FRAMEGEN_BASE");
+		const int   base  = value != nullptr ? std::max(0, std::atoi(value)) : 60;
+		if (base == 0) return 0;
+		return std::max(0, static_cast<int>(std::lround(static_cast<double>(Config::GetVblankFrequency()) / base)) - 1);
+	}();
+	return floor;
+}
+
+// `floor`: at least floor + 1 vblanks since the last flip (beyond the game's own flip rate).
+static bool IsFlipDueLocked(const VideoOutConfig& cfg, uint64_t generation, int floor = 0) {
 	if (!cfg.opened || cfg.closing || cfg.generation != generation) {
 		return false;
+	}
+	if (floor > cfg.flip_rate) {
+		return cfg.vblank_status.count - cfg.last_flip_vblank >= static_cast<uint64_t>(floor) + 1u;
 	}
 	const int interval = cfg.flip_rate + 1;
 
@@ -689,6 +716,7 @@ int VideoOutDriver::Impl::Open(int bus_type, int index) {
 		EXIT("video-out port generation wrapped\n");
 	}
 	config.output_mode               = VIDEO_OUT_OUTPUT_MODE_DEFAULT;
+	config.last_flip_vblank          = 0;
 	config.flip_status               = VideoOutFlipStatus();
 	config.flip_status.flipArg       = -1;
 	config.flip_status.currentBuffer = -1;
@@ -1399,7 +1427,12 @@ bool FlipQueue::Flip(uint32_t micros) {
 	for (size_t i = 0; i < count; i++) {
 		auto& r = requests[i];
 		if (r.id == group) {
-			due &= IsFlipDueLocked(*r.cfg, r.generation);
+			int floor = 0;
+			if (r.frame != nullptr) {
+				if (Graphics::Presenter::FlipRateApplies(*r.frame)) floor = FlipRateFloor();
+				if (Graphics::Presenter::GeneratesFrames()) floor = std::max(floor, FrameGenFloor());
+			}
+			due &= IsFlipDueLocked(*r.cfg, r.generation, floor);
 			pace_vblank = r.cfg->vblank_status.count;
 		}
 		if (r.cfg->bus == VIDEO_OUT_BUS_TYPE_MAIN &&
@@ -1445,6 +1478,7 @@ bool FlipQueue::Flip(uint32_t micros) {
 		}
 		auto& r = *it;
 		r.cfg->flip_status.count++;
+		r.cfg->last_flip_vblank = r.cfg->vblank_status.count;
 		r.cfg->flip_status.processTime              = LibKernel::KernelGetProcessTime();
 		r.cfg->flip_status.processTimeCounter       = LibKernel::KernelGetProcessTimeCounter();
 		r.cfg->flip_status.submitProcessTimeCounter = r.submit_ptc;

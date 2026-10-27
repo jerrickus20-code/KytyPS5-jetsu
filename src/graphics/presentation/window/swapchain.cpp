@@ -18,6 +18,7 @@
 #include "graphics/presentation/systemOverlay.h"
 #include "graphics/presentation/videoOut.h"
 #include "graphics/presentation/window/windowInternal.h"
+#include "local/frame-gen.h"
 
 #include <algorithm>
 #include <array>
@@ -42,6 +43,11 @@ struct Presenter::Frame {
 	bool          busy         = false;
 	bool          hdr          = false;
 	bool          blank        = false;
+	// KYTY_FRAMEGEN (local/frame-gen.h): the frame's inputs for DLSS-G, copied at the guest flip (PrepareInputs); the
+	// present that shows the frame the first time hands them over (fg_shown), the repeats of it (an overlay refresh) do not.
+	FrameGen::FrameInputs fg;
+	bool                  fg_shown = false;
+	bool                  scene    = false; // the game's 3D view (FrameGen::TakeScene)
 
 	void Configure(GraphicContext& graphics, vk::Extent2D extent, vk::Format format);
 	void Transit(vk::CommandBuffer command, vk::ImageLayout layout, vk::AccessFlags2 access);
@@ -56,6 +62,7 @@ public:
 	~FramePool() {
 		m_scheduler.Wait(m_scheduler.CurrentTick() - 1);
 		for (auto& frame: m_frames) {
+			FrameGen::DestroyInputs(m_window.graphic_ctx, frame->fg);
 			m_window.graphic_ctx.device.destroyImageView(frame->view, nullptr);
 			if (frame->image.image != nullptr) {
 				m_window.graphic_ctx.DeleteImage(frame->image);
@@ -288,6 +295,7 @@ public:
 		return static_cast<uint32_t>(m_images.size());
 	}
 	[[nodiscard]] vk::Format Format() const noexcept { return m_format; }
+	[[nodiscard]] vk::Extent2D Extent() const noexcept { return m_extent; }
 	[[nodiscard]] bool       IsMinimized() const noexcept { return m_minimized; }
 	[[nodiscard]] bool IsHdrSupported() const noexcept { return m_hdr_supported.load(); }
 	bool SetHdr(bool hdr) {
@@ -347,6 +355,8 @@ struct Presenter::Impl {
 		LOGF("Recovering Vulkan swapchain%s\n",
 		     status == Swapchain::Status::SurfaceLost ? " and surface" : "");
 		Common::DebugCounters::Add(Common::DebugCounters::Counter::SwapchainRecreations);
+		// (DLSS-G off until frames with inputs turn it on again.)
+		if (FrameGen::Enabled()) FrameGen::SwapchainChanging();
 		swapchain.Recreate(status == Swapchain::Status::SurfaceLost);
 		if (!swapchain.IsMinimized()) {
 			frames.SetFormat(swapchain.Format());
@@ -1240,7 +1250,8 @@ static bool PresentUnlocked() {
 		const auto* value = std::getenv("KYTY_PRESENT_UNLOCKED");
 		return value == nullptr || std::strcmp(value, "0") != 0;
 	}();
-	return enabled;
+	// (Frame generation shares the renderer's state: its presents keep the lock.)
+	return enabled && !FrameGen::Enabled();
 }
 
 Presenter::~Presenter() = default;
@@ -1272,6 +1283,14 @@ Presenter::Frame& Presenter::PrepareFrame(CommandBuffer& buffer, const ImageInfo
 		               vk::AccessFlagBits2::eTransferRead);
 		Vr::OpenXrQueueEyeSource(buffer, frame->image);
 	}
+	// KYTY_FRAMEGEN: DLSS-G's inputs of this frame (the game's depth and motion vectors), copied into the same command
+	// buffer as the picture.
+	frame->scene    = FrameGen::TakeScene();
+	frame->fg.valid = false;
+	frame->fg_shown = false;
+	if (FrameGen::Enabled() && !headset) {
+		FrameGen::PrepareInputs(m_impl->window.graphic_ctx, m_impl->renderer.GetTextureCache(), buffer, frame->fg);
+	}
 	return *frame;
 }
 
@@ -1280,8 +1299,11 @@ Presenter::Frame& Presenter::PrepareBlankFrame(uint32_t width, uint32_t height, 
 	KYTY_PROFILER_FUNCTION();
 	auto              format = m_impl->frames.GetFormat();
 	auto*             frame  = m_impl->frames.Acquire({width, height}, format);
-	frame->hdr   = false;
-	frame->blank = true;
+	frame->hdr      = false;
+	frame->blank    = true;
+	frame->scene    = false;
+	frame->fg.valid = false;
+	frame->fg_shown = false;
 	// Into the GPU thread's command buffer (its flip) under the renderer's lock; the present
 	// thread's blank frame (no producer) uses only the presenter's scheduler and frame.
 	std::optional<RenderLockGuard> render_lock;
@@ -1341,6 +1363,10 @@ void Presenter::Present(std::span<const Layer> layers) {
 		m_impl->frames.ValidateForPresent(layer.frame);
 		auto& previous = m_impl->layers[layer.bus];
 		if (previous.frame != nullptr) {
+			// A frame with inputs replaced before it was shown: DLSS-G's history restarts at the next one.
+			if (previous.frame != layer.frame && previous.frame->fg.valid && !previous.frame->fg_shown) {
+				FrameGen::NoteDroppedFrame();
+			}
 			m_impl->frames.Release(previous.frame);
 		}
 		previous = layer;
@@ -1394,7 +1420,8 @@ void Presenter::Impl::Present() {
 			}
 			auto&             command = present_scheduler.BeginCommand();
 			const bool        draw_system_overlay =
-			    (overlay_visual.active || PerformanceOverlayEnabled()) && swapchain.PrepareSystemOverlay();
+			    (overlay_visual.active || PerformanceOverlayEnabled() || !FrameGen::HudNotice().empty()) &&
+			    swapchain.PrepareSystemOverlay();
 			swapchain.RecordPresentCommands(command, layers[0].frame, layers[1],
 			                                draw_system_overlay);
 			const auto tick = swapchain.Submit(present_scheduler);
@@ -1404,7 +1431,26 @@ void Presenter::Impl::Present() {
 				}
 			}
 		}
+		// KYTY_FRAMEGEN: Streamline takes the present (vkQueuePresentKHR is its hook) and adds the generated frames; the
+		// repeat of a frame already shown (an overlay refresh) carries no new inputs.
+		const bool generate = FrameGen::Enabled();
+		FrameGen::FrameInputs* inputs = nullptr;
+		if (generate) {
+			// (No wait for the blit's GPU work as in the other tree: Swapchain::Present submits what the present waits
+			// for ahead of it under the queue lock, so the present waits for nothing not yet submitted.)
+			auto* main_frame = layers[0].frame;
+			if (main_frame != nullptr && !main_frame->blank && main_frame->fg.valid && !main_frame->fg_shown) {
+				inputs = &main_frame->fg;
+			}
+			FrameGen::BeforePresent(inputs, swapchain.Extent(),
+			                        vk::Rect2D {{0, 0}, swapchain.Extent()}, swapchain.Format(),
+			                        swapchain.ImageCount());
+		}
 		status = swapchain.Present();
+		if (generate) {
+			FrameGen::AfterPresent();
+			if (inputs != nullptr) layers[0].frame->fg_shown = true;
+		}
 		if (status == Swapchain::Status::Minimized) {
 			return;
 		}
@@ -1424,7 +1470,17 @@ void Presenter::Impl::Present() {
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::DroppedPresents);
 }
 
+bool Presenter::FlipRateApplies(const Frame& frame) noexcept {
+	// The game's 3D view only (with frame generation, the frames carrying its inputs): a capped movie played at half speed.
+	return FrameGen::Enabled() ? frame.fg.valid : frame.scene;
+}
+
+bool Presenter::GeneratesFrames() noexcept {
+	return FrameGen::Enabled();
+}
+
 void Presenter::Discard(Frame& frame) {
+	if (frame.fg.valid && !frame.fg_shown) FrameGen::NoteDroppedFrame();
 	m_impl->frames.Release(&frame);
 }
 

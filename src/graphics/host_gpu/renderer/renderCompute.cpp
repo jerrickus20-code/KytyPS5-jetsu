@@ -33,6 +33,7 @@
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
+#include "local/frame-gen.h"
 
 #include <algorithm>
 #include <tuple>
@@ -546,6 +547,14 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			m_rebind_epoch = cache.UnregisterEpoch();
 			RebindBuffers(bindings);
 		}
+	}
+	// The game's TAA pass: the 3D view of the frame, whose depth and motion vectors DLSS-G takes (local/frame-gen.h).
+	if (FrameGen::IsTaaShader(program.shader_hash)) FrameGen::NoteScene();
+	if (FrameGen::Enabled() && FrameGen::IsTaaShader(program.shader_hash) && bindings.images.size() > 3) {
+		// TAA inputs (docs/RE-DEMONS-SOULS.md): slot 1 depth, slot 3 motion vectors.
+		FrameGen::OnDispatch(program.shader_hash, bindings.images[1].image_id,
+		                     bindings.images[1].desc.info.data.address, bindings.images[3].image_id,
+		                     bindings.images[3].desc.info.data.address);
 	}
 	CpGaps::Phase(CpGaps::Cat::DispatchEmit);
 

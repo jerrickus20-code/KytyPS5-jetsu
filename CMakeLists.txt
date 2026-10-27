@@ -334,6 +334,8 @@ file(GLOB kyty_emulator_src CONFIGURE_DEPENDS
 	"${KYTY_SOURCE_DIR}/kernel/*.h"
 	"${KYTY_SOURCE_DIR}/loader/*.cpp"
 	"${KYTY_SOURCE_DIR}/loader/*.h"
+	"${KYTY_SOURCE_DIR}/local/*.cpp"
+	"${KYTY_SOURCE_DIR}/local/*.h"
 )
 
 find_program(KYTY_GLSLANG_VALIDATOR NAMES glslangValidator glslang REQUIRED)
@@ -2587,6 +2589,22 @@ endif()
 # dlopen/dlsym/dladdr for RenderDoc.
 target_link_libraries(kyty_emulator ${CMAKE_DL_LIBS})
 target_include_directories(kyty_emulator PRIVATE ${inc_headers})
+
+# Frame generation (src/local/frame-gen.cpp): the NVIDIA Streamline SDK's headers when they were unpacked under
+# _Build/deps (never part of the repository; the workflow fetches them). Its DLLs are the user's own, loaded at run time.
+if (WIN32)
+	set(KYTY_STREAMLINE_SDK "${CMAKE_CURRENT_SOURCE_DIR}/_Build/deps/streamline/sdk" CACHE PATH
+	    "NVIDIA Streamline SDK headers for frame generation (local only)")
+	if (EXISTS "${KYTY_STREAMLINE_SDK}/include/sl.h")
+		set_property(SOURCE "${KYTY_SOURCE_DIR}/local/frame-gen.cpp" APPEND PROPERTY
+		             INCLUDE_DIRECTORIES "${KYTY_STREAMLINE_SDK}/include")
+		set_property(SOURCE "${KYTY_SOURCE_DIR}/local/frame-gen.cpp" APPEND PROPERTY
+		             COMPILE_DEFINITIONS KYTY_FRAMEGEN_STREAMLINE=1)
+		message(STATUS "Frame generation: NVIDIA Streamline headers from ${KYTY_STREAMLINE_SDK}")
+	else()
+		message(STATUS "Frame generation: no Streamline headers (${KYTY_STREAMLINE_SDK}): built without it")
+	endif()
+endif()
 
 clang_tidy_check(kyty_emulator "" "${check_headers}" "${inc_headers}")
 

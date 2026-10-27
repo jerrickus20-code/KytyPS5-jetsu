@@ -38,6 +38,7 @@
 #include "kernel/memory.h"
 #include "libs/controller.h"
 #include "loader/systemContent.h"
+#include "local/frame-gen.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -2139,13 +2140,31 @@ void WindowContext::CreateVulkan() {
 			GpuTiming::NoteCalibrationExtensionEnabled(calibration);
 		}
 		Vr::OpenXrAppendExtensions(device_extensions, available_extensions, true);
+		// KYTY_FRAMEGEN: Streamline enables VK_NV_low_latency2 (Reflex) without the present-id extension it
+		// requires; current drivers then refuse the device.
+		if (Libs::Graphics::FrameGen::Requested() &&
+		    HasExtension(available_extensions, VK_KHR_PRESENT_ID_EXTENSION_NAME) &&
+		    !HasExtension(device_extensions, VK_KHR_PRESENT_ID_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+		}
 	}
 
+	// (Streamline's own answer whether DLSS-G can run here, asked before the device: the refusal below gives it.)
+	const std::string frame_gen_problem = Libs::Graphics::FrameGen::SupportProblem(graphic_ctx.physical_device);
 	graphic_ctx.device = VulkanCreateDevice(graphic_ctx, device_extensions);
 	if (graphic_ctx.device == nullptr) {
+		// (An RTX 5080 whose driver refused the device Streamline asked for: the game runs without it.)
+		if (Libs::Graphics::FrameGen::Requested()) {
+			EXIT("Could not create the Vulkan device with DLSS frame generation (NVIDIA Streamline)%s%s: start without "
+			     "frame generation. KYTY_FRAMEGEN_VERBOSE=1 logs why the driver refused it.%s\n",
+			     frame_gen_problem.empty() ? "" : ": ", frame_gen_problem.c_str(),
+			     Libs::Graphics::FrameGen::RefusedDeviceAdvice().c_str());
+		}
 		EXIT("Could not create device");
 	}
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(graphic_ctx.device);
+	// KYTY_FRAMEGEN: the command-buffer calls go to the driver, not through Streamline's wrappers.
+	Libs::Graphics::FrameGen::BypassCommandHooks(graphic_ctx.device);
 	// Diagnostic only (KYTY_GPU_OP_PROFILE / KYTY_GPU_OP_COUNTERS): wraps dispatcher entries.
 	GpuOpProfiler::InstallHooks(graphic_ctx);
 	// KYTY_CP_RECORDER_VERIFY ownership hooks wrap the GpuOpProfiler's.
@@ -2171,6 +2190,8 @@ void WindowContext::CreateVulkan() {
 		PrintDeviceReport(graphic_ctx);
 	}
 	LogStabilitySwitches(graphic_ctx);
+
+	Libs::Graphics::FrameGen::OnDevice(graphic_ctx.instance, graphic_ctx.physical_device, graphic_ctx.device);
 
 	if (!graphic_ctx.CreateAllocator()) {
 		EXIT("Could not create Vulkan memory allocator");
