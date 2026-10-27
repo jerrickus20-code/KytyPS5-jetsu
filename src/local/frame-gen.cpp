@@ -3922,6 +3922,12 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 	g_late_guest_frame = g_guest_frame;
 	g_late_unresolved  = 0;
 	g_late_failures    = 0;
+	// KYTY_LATE_DLSS_NO_BIND=1: DLSS runs but the composite keeps the game's picture (a crash bisection).
+	static const bool no_bind = [] {
+		const char* value = std::getenv("KYTY_LATE_DLSS_NO_BIND");
+		return value != nullptr && value[0] == '1';
+	}();
+	if (no_bind) return nullptr;
 	if (++g_late_evaluations == 1 || g_late_evaluations == 600) {
 		std::printf("Late DLSS: evaluated %llu time(s)\n", static_cast<unsigned long long>(g_late_evaluations));
 		std::fflush(stdout);
