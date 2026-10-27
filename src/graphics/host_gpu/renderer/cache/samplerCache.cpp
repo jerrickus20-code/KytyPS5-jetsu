@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -195,6 +196,30 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
 	sampler_info.mipLodBias = std::clamp(
 	    static_cast<float>(static_cast<int16_t>((r.LodBias() ^ 0x2000u) - 0x2000u)) / 256.0f,
 	    -max_lod_bias, max_lod_bias);
+	// KYTY_SAMPLER_LOD_BIAS (e.g. -1 for late DLSS from 720p to 1440p: log2(render / output)): added to the bias of the
+	// anisotropic samplers (the 3D materials), so a game rendering below its output samples its textures at the output's
+	// detail and DLSS can resolve it. KYTY_SAMPLER_LOD_BIAS_ALL=1: every mip-filtered, non-comparison sampler (explicit-LOD
+	// samples move too: post-processing that picks its mips may change).
+	{
+		static const float extra = [] {
+			const char* value = std::getenv("KYTY_SAMPLER_LOD_BIAS");
+			return value != nullptr ? static_cast<float>(std::atof(value)) : 0.0f;
+		}();
+		static const bool all = [] {
+			const char* value = std::getenv("KYTY_SAMPLER_LOD_BIAS_ALL");
+			return value != nullptr && value[0] == '1';
+		}();
+		if (extra != 0.0f && (aniso || all) && r.DepthCompareFunc() == 0 && !r.ForceUnormCoords() && max_lod > min_lod) {
+			sampler_info.mipLodBias = std::clamp(sampler_info.mipLodBias + extra, -max_lod_bias, max_lod_bias);
+			static uint32_t told = 0;
+			if (told++ < 4) {
+				std::printf("Sampler LOD bias: %+.2f added (KYTY_SAMPLER_LOD_BIAS%s), sampler bias now %+.2f\n",
+				            static_cast<double>(extra), all ? ", all samplers" : ", anisotropic samplers",
+				            static_cast<double>(sampler_info.mipLodBias));
+				std::fflush(stdout);
+			}
+		}
+	}
 	sampler_info.anisotropyEnable        = (aniso ? VK_TRUE : VK_FALSE);
 	sampler_info.maxAnisotropy           = aniso_ratio;
 	sampler_info.compareEnable           = (r.DepthCompareFunc() != 0 ? VK_TRUE : VK_FALSE);
