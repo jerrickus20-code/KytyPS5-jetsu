@@ -3676,7 +3676,8 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		create.format        = vk::Format::eR16G16B16A16Sfloat;
 		create.tiling        = vk::ImageTiling::eOptimal;
 		create.initialLayout = vk::ImageLayout::eUndefined;
-		create.usage         = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc;
+		create.usage         = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc |
+		                       vk::ImageUsageFlagBits::eTransferDst;
 		create.sharingMode   = vk::SharingMode::eExclusive;
 		create.samples       = vk::SampleCountFlagBits::e1;
 		if (!graphics.CreateImage(create, g_late_image)) {
@@ -3779,6 +3780,18 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 	if (Evaluated(result)) {
 		const sl::BaseStructure* inputs[] {&viewport};
 		result = g_api.evaluate_feature(sl::kFeatureDLSS, *token, inputs, 1, sl_command);
+	}
+	// KYTY_LATE_DLSS_PROOF=1: DLSS's picture painted magenta (a check that the final composite shows it: Shift+F6 off
+	// brings the game's own back).
+	static const bool proof = [] {
+		const char* value = std::getenv("KYTY_LATE_DLSS_PROOF");
+		return value != nullptr && value[0] == '1';
+	}();
+	if (proof && Evaluated(result)) {
+		DirectLayout(command, g_late_image, vk::ImageLayout::eTransferDstOptimal);
+		const vk::ClearColorValue magenta(std::array<float, 4> {1.0f, 0.0f, 1.0f, 1.0f});
+		const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+		command.clearColorImage(g_late_image.image, vk::ImageLayout::eTransferDstOptimal, &magenta, 1, &range, Direct());
 	}
 	DirectLayout(command, g_late_image, vk::ImageLayout::eShaderReadOnlyOptimal);
 	if (!Evaluated(result)) {
