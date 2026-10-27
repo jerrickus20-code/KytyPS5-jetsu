@@ -749,6 +749,12 @@ static void InitCudaEarly() {
 #endif
 
 static int Main(int argc, char* argv[]) {
+	// KYTY_LOG_UNBUFFERED=1: console output reaches a pipe or file at once (run-dlss.ps1 sets it), so a log of a run
+	// that is killed or crashes is complete.
+	if (const char* unbuffered = std::getenv("KYTY_LOG_UNBUFFERED"); unbuffered != nullptr && unbuffered[0] == '1') {
+		std::setvbuf(stdout, nullptr, _IONBF, 0);
+		std::setvbuf(stderr, nullptr, _IONBF, 0);
+	}
 #if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
 	InitCudaEarly();
 #endif

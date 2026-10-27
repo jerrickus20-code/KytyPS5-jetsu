@@ -1,6 +1,6 @@
 # Starts the emulator with DLSS frame generation (NVIDIA Streamline) and the in-game switches of docs/DLSS.md.
 #
-#   .\run-dlss.ps1 -Game C:\path\to\game   the game folder (the one with eboot.bin); remembered in _dlss\game.txt
+#   .\run-dlss.ps1 -Game C:\path\to\game   the game folder (the one with eboot.bin) or its .zar archive; remembered in _dlss\game.txt
 #   .\run-dlss.ps1 -StreamlineDir <dir>    where NVIDIA's Streamline runtime is (sl.interposer.dll; the SDK's bin\x64);
 #                                          remembered in _dlss\streamline.txt, else a "streamline" folder next to this file
 #   .\run-dlss.ps1 -FrameGen 0             without frame generation (the cap and the overlay line stay)
@@ -13,6 +13,7 @@
 #                                          sets -RenderHeight 720 unless given
 #   .\run-dlss.ps1 -Set KYTY_A=1,KYTY_B=2  more emulator switches (KYTY_*), after the preset's
 #   .\run-dlss.ps1 -Patch <file.json>      a game patch (--game-patch)
+#   .\run-dlss.ps1 -EmuArgs '--skip-notice-screen true'   more emulator command-line arguments, split at spaces
 # The emulator's console output goes to _dlss\run.log as well; send that file with a problem report.
 param(
 	[string]$Game = '',
@@ -23,7 +24,8 @@ param(
 	[int]$RenderHeight = 0,
 	[int]$LateDlss = 0,
 	[string]$Set = '',
-	[string]$Patch = ''
+	[string]$Patch = '',
+	[string]$EmuArgs = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -32,7 +34,16 @@ if (!(Test-Path -LiteralPath $exe)) { throw "kyty_emulator.exe is not next to ru
 $state = Join-Path $root '_dlss'
 New-Item -ItemType Directory -Force $state | Out-Null
 
-function Test-Game([string]$path) { $path -and (Test-Path -LiteralPath (Join-Path $path 'eboot.bin')) }
+# A game is a folder with eboot.bin, or a ZArchive (.zar) file, or a folder that holds one .zar (the emulator reads archives itself).
+function Resolve-Game([string]$path) {
+	if (!$path) { return '' }
+	if (Test-Path -LiteralPath $path -PathType Leaf) { if ($path -like '*.zar') { return $path } else { return '' } }
+	if (Test-Path -LiteralPath (Join-Path $path 'eboot.bin')) { return $path }
+	$zar = @(Get-ChildItem -LiteralPath $path -Filter '*.zar' -File -ErrorAction SilentlyContinue)
+	if ($zar.Count -eq 1) { return $zar[0].FullName }
+	return ''
+}
+function Test-Game([string]$path) { [bool](Resolve-Game $path) }
 
 # The game: -Game, else the last one given, else a folder dialog.
 $gameFile = Join-Path $state 'game.txt'
@@ -44,8 +55,9 @@ if (!(Test-Game $Game)) {
 	$dialog.Description = 'Choose the game folder (the one with eboot.bin and sce_sys)'
 	if ($dialog.ShowDialog() -eq 'OK') { $Game = $dialog.SelectedPath; $remember = $true }
 }
-if (!(Test-Game $Game)) { throw "no eboot.bin in '$Game'" }
+if (!(Test-Game $Game)) { throw "no eboot.bin (or single .zar archive) in '$Game'" }
 if ($remember) { Set-Content -LiteralPath $gameFile -Value $Game -Encoding UTF8 }
+$Game = Resolve-Game $Game
 
 # The Streamline runtime.
 $slFile = Join-Path $state 'streamline.txt'
@@ -79,6 +91,7 @@ if ($LateDlss -gt 0) {
 }
 if ($RenderHeight -gt 0) { $env:KYTY_RENDER_HEIGHT = "$RenderHeight" }
 if ($Discover) { $env:KYTY_PROFILE_DISCOVER = '1' }
+$env:KYTY_LOG_UNBUFFERED = '1'
 if (!$env:KYTY_TOGGLE_FILE) { $env:KYTY_TOGGLE_FILE = (Join-Path $state 'toggles.txt') }
 foreach ($pair in ($Set -split ',' | Where-Object { $_ })) {
 	$index = $pair.IndexOf('=')
@@ -88,6 +101,7 @@ foreach ($pair in ($Set -split ',' | Where-Object { $_ })) {
 
 $arguments = @('--game', $Game)
 if (!$Windowed) { $arguments += '--fullscreen' }
+if ($EmuArgs) { $arguments += ($EmuArgs -split '\s+' | Where-Object { $_ }) }
 if ($Patch) { $arguments += @('--game-patch', (Resolve-Path -LiteralPath $Patch).Path) }
 
 Write-Host "game: $Game"
@@ -95,4 +109,6 @@ if ($RenderHeight -gt 0) { Write-Host "render height: $RenderHeight$(if ($LateDl
 Write-Host "frame generation: $(if ($FrameGen -gt 0) { "on ($FrameGen generated frame per rendered one)" } else { 'off' }); Streamline: $(if ($StreamlineDir) { $StreamlineDir } else { '(streamline folder next to the emulator)' })"
 Set-Location -LiteralPath $root
 & $exe @arguments 2>&1 | Tee-Object -FilePath (Join-Path $state 'run.log')
-exit $LASTEXITCODE
+$code = $LASTEXITCODE
+"emulator exited with code $code at $(Get-Date -Format 'HH:mm:ss')" | Tee-Object -FilePath (Join-Path $state 'run.log') -Append
+exit $code
