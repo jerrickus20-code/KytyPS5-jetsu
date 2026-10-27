@@ -18,6 +18,8 @@
 //   srt_jitter               = 57   # 2 floats: the clip-space TAA offset (NDC units)
 //   composite_shader         = 0x1ad8b5870fe4d3ec   # the pixel shader laying the interface over the render-size picture
 //   composite_scene_slot     = 1                    # ... and the texture slot of that picture
+//   direct_motion_target     = 4      # a game without a TAA pass: the G-buffer draw's color target (RG16F) holding the motion
+//                                      # vectors; its depth target is the other input (late DLSS then needs no camera)
 //   render_aspect            = 16:9                 # the render size's aspect (width a multiple of 8)
 //   patch_u32                = <pattern> | <offset> | width|height   # see RenderPatch
 //   patch_pair               = <old width> <old height>              # see RenderPatch
@@ -49,6 +51,7 @@ struct Profile {
 	uint64_t composite_shader     = 0;
 	uint32_t composite_scene_slot = 1;
 	uint32_t aspect_w = 16, aspect_h = 9;
+	int      direct_motion_target = -1; // see the file format above; -1: none
 	std::vector<RenderPatch> patches;
 	bool                     loaded = false; // a profile of this title was found
 

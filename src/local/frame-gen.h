@@ -181,6 +181,11 @@ void OnDispatch(uint64_t cs_hash, ImageId depth, uint64_t depth_address, ImageId
 void OnUpscale(ImageId depth, uint64_t depth_address, ImageId motion, uint64_t motion_address);
 // Renderer thread, at a TAA dispatch (KYTY_LATE_DLSS): its depth and motion vectors of `extent`; the largest kept.
 void OnLateDispatch(ImageId depth, uint64_t depth_address, ImageId motion, uint64_t motion_address, vk::Extent2D extent);
+// Renderer thread, at a G-buffer draw of a game without a TAA pass (the profile's direct_motion_target): its depth target
+// and the motion vector color target, for late DLSS.
+void OnDirectGbuffer(ImageId depth, uint64_t depth_address, ImageId motion, uint64_t motion_address, vk::Extent2D extent);
+// Late DLSS is on and the profile names a motion vector target: the draw hook looks for it.
+[[nodiscard]] bool DirectCapture();
 // At the guest flip, in the frame's command buffer: copy the gathered images into `inputs`.
 void PrepareInputs(GraphicContext& graphics, TextureCache& cache, CommandBuffer& command,
                    FrameInputs& inputs);

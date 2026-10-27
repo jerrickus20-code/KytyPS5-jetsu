@@ -2086,6 +2086,31 @@ void OnLateDispatch(ImageId depth, uint64_t depth_address, ImageId motion, uint6
 #endif
 }
 
+std::atomic<bool> g_direct_valid {false}; // this guest frame's G-buffer draw gave late DLSS its images (OnDirectGbuffer)
+
+bool DirectCapture() {
+#ifdef KYTY_FRAMEGEN_STREAMLINE
+	return g_late_ready && ::GameProfile::Current().direct_motion_target >= 0;
+#else
+	return false;
+#endif
+}
+
+void OnDirectGbuffer(ImageId depth, uint64_t depth_address, ImageId motion, uint64_t motion_address, vk::Extent2D extent) {
+#ifdef KYTY_FRAMEGEN_STREAMLINE
+	if (!g_late_ready) return;
+	g_late_sources = {depth, motion, depth_address, motion_address, extent};
+	g_late_largest = extent;
+	g_direct_valid.store(true, std::memory_order_relaxed);
+#else
+	(void)depth;
+	(void)depth_address;
+	(void)motion;
+	(void)motion_address;
+	(void)extent;
+#endif
+}
+
 void OnUpscale(ImageId depth, uint64_t depth_address, ImageId motion, uint64_t motion_address) {
 	g_sources = {depth, motion, depth_address, motion_address, true};
 }
@@ -2714,6 +2739,25 @@ sl::Constants CameraConstants(const Camera& input, float width, float height, bo
 	return constants;
 }
 
+// Late DLSS of a game without a camera to read (the profile's direct_motion_target): no matrices, no jitter. The motion
+// vectors' unit: KYTY_DIRECT_MV=pixel (default: pixels of the render size), uv (0..1 of the picture), ndc (-1..1);
+// KYTY_DIRECT_MV_SIGN=-1 flips them; KYTY_DIRECT_DEPTH_INVERTED=0 for a depth that grows with distance.
+sl::Constants DirectConstants(float width, float height, bool reset) {
+	sl::Constants constants = IdentityConstants();
+	constants.reset         = reset ? sl::Boolean::eTrue : sl::Boolean::eFalse;
+	const char* unit        = std::getenv("KYTY_DIRECT_MV");
+	float       sx = 1.0f / width, sy = 1.0f / height;
+	if (unit != nullptr && std::string_view {unit} == "uv") sx = sy = 1.0f;
+	if (unit != nullptr && std::string_view {unit} == "ndc") sx = sy = 0.5f;
+	const char* sign = std::getenv("KYTY_DIRECT_MV_SIGN");
+	const float flip = sign != nullptr && std::atof(sign) < 0 ? -1.0f : 1.0f;
+	constants.mvecScale = sl::float2(sx * flip, sy * flip);
+	if (const char* inverted = std::getenv("KYTY_DIRECT_DEPTH_INVERTED"); inverted != nullptr && inverted[0] == '0')
+		constants.depthInverted = sl::Boolean::eFalse;
+	constants.cameraAspectRatio = width / height;
+	return constants;
+}
+
 vk::Extent2D g_dlss_extent {};
 uint64_t     g_dlss_guest_frame = UINT64_MAX; // the guest frame DLSS last ran in
 uint32_t     g_dlss_failures    = 0;
@@ -3310,7 +3354,9 @@ vk::Extent2D  g_late_input {};
 vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer command, const SrImage& scene,
                                TextureCache& cache) {
 	if (g_late_failures >= LateFailureLimit || scene.image == nullptr || scene.view == nullptr) return nullptr;
-	if (!g_sources.valid || !g_camera.valid) return nullptr; // (a menu, a movie: no 3D this frame)
+	// (A game without a TAA pass: its G-buffer's depth and motion vectors, no camera: DirectConstants.)
+	const bool direct = g_direct_valid.load(std::memory_order_relaxed) && ::GameProfile::Current().direct_motion_target >= 0;
+	if (!direct && (!g_sources.valid || !g_camera.valid)) return nullptr; // (a menu, a movie: no 3D this frame)
 	const uint32_t height = g_late_height;
 	const uint32_t width  = (height * 16u / 9u + 7u) / 8u * 8u;
 	if (scene.extent.height >= height) return nullptr;
@@ -3401,8 +3447,9 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 	uint32_t        index      = ++late_frame;
 	sl::FrameToken* token      = nullptr;
 	if (NewFrameToken(token, &index) != sl::Result::eOk || token == nullptr) return nullptr;
-	auto constants = CameraConstants(g_camera, static_cast<float>(scene.extent.width),
-	                                 static_cast<float>(scene.extent.height), reset);
+	auto constants = direct ? DirectConstants(static_cast<float>(scene.extent.width), static_cast<float>(scene.extent.height), reset)
+	                        : CameraConstants(g_camera, static_cast<float>(scene.extent.width),
+	                                          static_cast<float>(scene.extent.height), reset);
 	// (Resolved by the TAA or DLAA: no jitter left in it. KYTY_LATE_DLSS_AA: the game's jitter, its TAA not run.)
 	if (!g_late_aa) constants.jitterOffset = sl::float2(0.0f, 0.0f);
 	(void)g_api.set_constants(constants, *token, viewport);

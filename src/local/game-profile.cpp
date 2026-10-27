@@ -130,6 +130,10 @@ bool Parse(std::string_view text, Profile* profile, std::string* error) {
 			if (!Number(value, &profile->composite_shader)) return fail("composite_shader: hex hash expected");
 		} else if (key == "composite_scene_slot") {
 			if (!u32(&profile->composite_scene_slot)) return fail("composite_scene_slot: number expected");
+		} else if (key == "direct_motion_target") {
+			uint32_t target = 0;
+			if (!u32(&target) || target > 7) return fail("direct_motion_target: 0..7 expected");
+			profile->direct_motion_target = static_cast<int>(target);
 		} else if (key == "render_aspect") {
 			const auto colon = value.find(':');
 			uint64_t   w = 0, h = 0;

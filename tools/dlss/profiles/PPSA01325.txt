@@ -6,3 +6,4 @@ version = 01.905.000
 # The final tonemap: it draws the HDR scene (RGBA16F, slot 0) into the 3840x2160 output.
 composite_shader = 0x67008a703cf06422
 composite_scene_slot = 0
+direct_motion_target = 4

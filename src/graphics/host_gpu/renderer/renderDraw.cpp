@@ -46,6 +46,7 @@
 #include "libs/errno.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "local/frame-gen.h"
+#include "local/game-profile.h"
 #include "local/profile-discover.h"
 
 #include <algorithm>
@@ -4007,6 +4008,20 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			ProfileDiscover::OnPixel(state.ps_input_info.stage.program->shader_hash, target.width, target.height, found);
 		}
 	}
+	// Late DLSS of a game without a TAA pass (profile direct_motion_target): the G-buffer draw's depth and motion vectors.
+	if (FrameGen::DirectCapture() && !mesh_active) {
+		const int motion_index = ::GameProfile::Current().direct_motion_target;
+		if (motion_index >= 0 && state.color_count > static_cast<uint32_t>(motion_index) && state.depth_info.image_id &&
+		    state.color_info[motion_index].image_id) {
+			auto&       texture_cache = m_context.GetTextureCache();
+			const auto& motion        = texture_cache.GetImage(state.color_info[motion_index].image_id);
+			const auto& depth         = texture_cache.GetImage(state.depth_info.image_id);
+			if (motion.backing.format == vk::Format::eR16G16Sfloat && motion.backing.extent == depth.backing.extent) {
+				FrameGen::OnDirectGbuffer(state.depth_info.image_id, depth.info.data.address, state.color_info[motion_index].image_id,
+				                          motion.info.data.address, {motion.backing.extent.width, motion.backing.extent.height});
+			}
+		}
+	}
 	// KYTY_PROFILE_TIMELINE: this draw in the frame's order (local/profile-discover.h).
 	if (ProfileDiscover::Enabled() && ProfileDiscover::TimelineActive() && !mesh_active && state.vertex_info[0].stage) {
 		std::vector<ProfileDiscover::ImageInfo> found;
@@ -4018,6 +4033,18 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				found.push_back({i, false, image.info.IsDepth(), static_cast<uint32_t>(image.backing.format),
 				                 image.backing.extent.width, image.backing.extent.height, image.backing.layers});
 			}
+		}
+		// (the draw's color targets as slots 100+: their formats, to find a motion vector target)
+		for (uint32_t i = 0; i < state.color_count && i < 8; ++i) {
+			if (!state.color_info[i].image_id) continue;
+			const auto& target = texture_cache.GetImage(state.color_info[i].image_id);
+			found.push_back({100 + i, true, false, static_cast<uint32_t>(target.backing.format), target.backing.extent.width,
+			                 target.backing.extent.height, target.backing.layers});
+		}
+		if (state.depth_info.image_id) {
+			const auto& target = texture_cache.GetImage(state.depth_info.image_id);
+			found.push_back({120, true, true, static_cast<uint32_t>(target.backing.format), target.backing.extent.width,
+			                 target.backing.extent.height, target.backing.layers});
 		}
 		uint32_t target_w = 0, target_h = 0, target_fmt = 0;
 		if (state.color_count != 0 && state.color_info[0].image_id) {
