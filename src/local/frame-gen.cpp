@@ -3720,8 +3720,9 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		}
 		g_late_input = scene.extent;
 		reset        = true;
-		std::printf("Late DLSS: %ux%u -> %ux%u, mode %u, picture format %d, hdr %d\n", scene.extent.width,
-		            scene.extent.height, width, height, static_cast<uint32_t>(options.mode), static_cast<int>(scene.format),
+		std::printf("Late DLSS: %ux%u -> %ux%u, mode %u, preset %u (13 = M), picture format %d, hdr %d\n", scene.extent.width,
+		            scene.extent.height, width, height, static_cast<uint32_t>(options.mode),
+		            static_cast<uint32_t>(options.qualityPreset), static_cast<int>(scene.format),
 		            options.colorBuffersHDR == sl::Boolean::eTrue ? 1 : 0);
 		std::fflush(stdout);
 	}
