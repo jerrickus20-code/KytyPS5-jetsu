@@ -1,6 +1,6 @@
 # Starts the emulator with DLSS frame generation (NVIDIA Streamline) and the in-game switches of docs/DLSS.md.
 #
-#   .\run-dlss.ps1 -Game D:\path\to\game   the game folder (the one with eboot.bin); remembered in _dlss\game.txt
+#   .\run-dlss.ps1 -Game C:\path\to\game   the game folder (the one with eboot.bin); remembered in _dlss\game.txt
 #   .\run-dlss.ps1 -StreamlineDir <dir>    where NVIDIA's Streamline runtime is (sl.interposer.dll; the SDK's bin\x64);
 #                                          remembered in _dlss\streamline.txt, else a "streamline" folder next to this file
 #   .\run-dlss.ps1 -FrameGen 0             without frame generation (the cap and the overlay line stay)

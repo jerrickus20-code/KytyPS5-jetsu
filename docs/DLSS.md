@@ -16,7 +16,7 @@ This fork is Jetsku's U59 emulator with the frame generation work of jerrickus20
 Extract the archive, then run `run-dlss.cmd` (the game folder is asked once and remembered):
 
 ```
-run-dlss.cmd -Game D:\games\PPSA01341 -StreamlineDir C:\streamline-sdk\bin\x64
+run-dlss.cmd -Game C:\games\PPSA01341 -StreamlineDir C:\streamline-sdk\bin\x64
 ```
 
 `run-dlss.ps1` applies `u59-preset.json` like the launcher does, adds `KYTY_FRAMEGEN=1` and starts the game fullscreen. Its console output is also written to `_dlss\run.log`: send that file with a problem report. `-Windowed`, `-FrameGen 0`, `-Set KYTY_X=1,KYTY_Y=2` and `-Patch <file>` are the other options.
