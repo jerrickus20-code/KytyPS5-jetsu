@@ -1,6 +1,9 @@
 #include "profile-discover.h"
 
 #include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <system_error>
 #include <cinttypes>
 #include <cmath>
 #include <cstdio>
@@ -37,12 +40,62 @@ std::string Images(std::span<const ImageInfo> images) {
 	}
 	return text;
 }
+std::string g_last_line;
+uint32_t    g_last_count = 0;
+uint32_t    g_timeline_lines = 0;
+constexpr uint32_t kMaxTimelineLines = 1500;
+
+void FlushTimeline() { // under g_mutex
+	if (g_last_count == 0) return;
+	std::printf("TL x%u %s\n", g_last_count, g_last_line.c_str());
+	g_last_count = 0;
+	if (++g_timeline_lines == kMaxTimelineLines) std::printf("TL (end: %u lines)\n", kMaxTimelineLines);
+	std::fflush(stdout);
+}
 } // namespace
+
+bool TimelineActive() {
+	// KYTY_PROFILE_TIMELINE=<file>: the timeline starts when that file exists (checked twice a second), so it can be
+	// begun when the game is in a scene.
+	static const std::string file = [] {
+		const char* value = std::getenv("KYTY_PROFILE_TIMELINE");
+		return std::string {value != nullptr ? value : ""};
+	}();
+	if (file.empty()) return false;
+	static std::atomic<bool> started {false};
+	static std::atomic<int64_t> last_check {0};
+	if (g_timeline_lines >= kMaxTimelineLines) return false;
+	if (started.load(std::memory_order_relaxed)) return true;
+	const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	if (now - last_check.load(std::memory_order_relaxed) < 500) return false;
+	last_check.store(now, std::memory_order_relaxed);
+	std::error_code ec;
+	if (!std::filesystem::exists(file, ec)) return false;
+	started.store(true, std::memory_order_relaxed);
+	std::printf("TL start (%s)\n", file.c_str());
+	return true;
+}
+
+void OnTimeline(const TimelineInfo& info, std::span<const ImageInfo> images) {
+	char head[200];
+	if (info.compute)
+		std::snprintf(head, sizeof(head), "C 0x%016" PRIx64 " groups %ux%ux%u:", info.ps, info.groups_x, info.groups_y, info.groups_z);
+	else
+		std::snprintf(head, sizeof(head), "D vs 0x%016" PRIx64 " ps 0x%016" PRIx64 " -> %ux%u fmt %u colors %u depth %d:", info.vs,
+		              info.ps, info.target_width, info.target_height, info.target_format, info.colors, info.depth);
+	std::string line = head + Images(images);
+	std::scoped_lock lock {g_mutex};
+	if (line == g_last_line) { ++g_last_count; return; }
+	FlushTimeline();
+	g_last_line = std::move(line);
+	g_last_count = 1;
+}
 
 bool Enabled() {
 	static const bool enabled = [] {
 		const char* value = std::getenv("KYTY_PROFILE_DISCOVER");
-		const bool  on    = value != nullptr && *value != 0 && std::strcmp(value, "0") != 0;
+		const char* timeline = std::getenv("KYTY_PROFILE_TIMELINE");
+		const bool  on    = (value != nullptr && *value != 0 && std::strcmp(value, "0") != 0) || (timeline != nullptr && *timeline != 0);
 		if (on) std::printf("PROFILE discovery on (KYTY_PROFILE_DISCOVER): shaders are logged once each\n");
 		return on;
 	}();

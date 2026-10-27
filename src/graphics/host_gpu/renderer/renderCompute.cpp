@@ -576,6 +576,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			                 static_cast<uint32_t>(image.backing.format), image.backing.extent.width,
 			                 image.backing.extent.height, image.backing.layers});
 		}
+		if (ProfileDiscover::TimelineActive())
+			ProfileDiscover::OnTimeline({true, 0, program.shader_hash, thread_group_x, thread_group_y, thread_group_z, 0, 0, 0, 0, -1}, found);
 		ProfileDiscover::OnCompute(program.shader_hash, thread_group_x, thread_group_y, thread_group_z, found);
 	}
 	CpGaps::Phase(CpGaps::Cat::DispatchEmit);

@@ -4007,6 +4007,35 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			ProfileDiscover::OnPixel(state.ps_input_info.stage.program->shader_hash, target.width, target.height, found);
 		}
 	}
+	// KYTY_PROFILE_TIMELINE: this draw in the frame's order (local/profile-discover.h).
+	if (ProfileDiscover::Enabled() && ProfileDiscover::TimelineActive() && !mesh_active && state.vertex_info[0].stage) {
+		std::vector<ProfileDiscover::ImageInfo> found;
+		auto&                                   texture_cache = m_context.GetTextureCache();
+		if (bindings.pixel && state.ps_active) {
+			for (uint32_t i = 0; i < bindings.pixel->images.size() && i < 16; ++i) {
+				if (bindings.pixel->images[i].image_id == ImageId {}) continue;
+				const auto& image = texture_cache.GetImage(bindings.pixel->images[i].image_id);
+				found.push_back({i, false, image.info.IsDepth(), static_cast<uint32_t>(image.backing.format),
+				                 image.backing.extent.width, image.backing.extent.height, image.backing.layers});
+			}
+		}
+		uint32_t target_w = 0, target_h = 0, target_fmt = 0;
+		if (state.color_count != 0 && state.color_info[0].image_id) {
+			const auto extent = state.color_info[0].Extent();
+			target_w          = extent.width;
+			target_h          = extent.height;
+			target_fmt        = static_cast<uint32_t>(texture_cache.GetImage(state.color_info[0].image_id).backing.format);
+		} else if (state.depth_info.image_id) {
+			const auto& depth_image = texture_cache.GetImage(state.depth_info.image_id);
+			target_w                = depth_image.backing.extent.width;
+			target_h                = depth_image.backing.extent.height;
+		}
+		const int depth = !state.depth_info.image_id ? -1 : (state.depth_info.depth_write_enable ? 1 : 0);
+		ProfileDiscover::OnTimeline({false, state.vertex_info[0].stage.program->shader_hash,
+		                             state.ps_active && state.ps_input_info.stage.program != nullptr ? state.ps_input_info.stage.program->shader_hash : 0, 0, 0, 0,
+		                             target_w, target_h, target_fmt, state.color_count, depth},
+		                            found);
+	}
 	const auto stages = std::span {descriptor_stages.data(), stage_count};
 	{
 		KYTY_PROFILER_DETAIL_BLOCK("Draw::PrepareGraphicsBindings");

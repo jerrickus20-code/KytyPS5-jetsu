@@ -25,11 +25,13 @@ param(
 	[int]$LateDlss = 0,
 	[string]$Set = '',
 	[string]$Patch = '',
-	[string]$EmuArgs = ''
+	[string]$EmuArgs = '',
+	[string]$EmuExe = ''
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $exe = Join-Path $root 'kyty_emulator.exe'
+if ($EmuExe) { $exe = if ([IO.Path]::IsPathRooted($EmuExe)) { $EmuExe } else { Join-Path $root $EmuExe } }  # another emulator exe, to compare builds
 if (!(Test-Path -LiteralPath $exe)) { throw "kyty_emulator.exe is not next to run-dlss.ps1 ($root)" }
 $state = Join-Path $root '_dlss'
 New-Item -ItemType Directory -Force $state | Out-Null
@@ -108,7 +110,16 @@ Write-Host "game: $Game"
 if ($RenderHeight -gt 0) { Write-Host "render height: $RenderHeight$(if ($LateDlss -gt 0) { "; late DLSS to $LateDlss" })" }
 Write-Host "frame generation: $(if ($FrameGen -gt 0) { "on ($FrameGen generated frame per rendered one)" } else { 'off' }); Streamline: $(if ($StreamlineDir) { $StreamlineDir } else { '(streamline folder next to the emulator)' })"
 Set-Location -LiteralPath $root
-& $exe @arguments 2>&1 | Tee-Object -FilePath (Join-Path $state 'run.log')
-$code = $LASTEXITCODE
-"emulator exited with code $code at $(Get-Date -Format 'HH:mm:ss')" | Tee-Object -FilePath (Join-Path $state 'run.log') -Append
+# The emulator's console output goes to run.log (and its errors to run-error.log); launch.txt says how it ended.
+$runLog = Join-Path $state 'run.log'
+$errLog = Join-Path $state 'run-error.log'
+$launch = Join-Path $state 'launch.txt'
+$quoted = ($arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
+"$(Get-Date -Format 'HH:mm:ss') starting: $exe $quoted" | Set-Content -LiteralPath $launch
+$process = Start-Process -FilePath $exe -ArgumentList $quoted -WorkingDirectory $root -PassThru -NoNewWindow `
+	-RedirectStandardOutput $runLog -RedirectStandardError $errLog
+$process.WaitForExit()
+$code = $process.ExitCode
+"$(Get-Date -Format 'HH:mm:ss') emulator exited with code $code (0x$('{0:X}' -f $code))" | Add-Content -LiteralPath $launch
+Write-Host (Get-Content -LiteralPath $launch -Raw)
 exit $code
