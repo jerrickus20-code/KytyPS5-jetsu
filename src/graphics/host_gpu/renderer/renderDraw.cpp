@@ -639,6 +639,17 @@ static void SetGraphicsDynamicParams(const CommandBuffer& buffer, const CommandS
 		}
 	}
 	static_assert(viewport_slots <= GraphicsDynamicStateShadow::MaxViewports);
+	// Late DLSS for a game without jitter: the scene passes (depth attached, the picture's size) are drawn a sub-pixel
+	// offset each frame, DLSS being told the same offset.
+	if (depth.image_id) {
+		float jitter_x = 0.0f, jitter_y = 0.0f;
+		if (FrameGen::LateJitter(rendering.width, rendering.height, jitter_x, jitter_y)) {
+			for (uint32_t i = 0; i < viewport_count; i++) {
+				viewports[i].x += jitter_x;
+				viewports[i].y += jitter_y;
+			}
+		}
+	}
 	// Bitwise comparisons: a skipped command must leave bit-identical state.
 	const bool same_count = recorder.Reuse() && shadow.viewport_count == viewport_count;
 	if (same_count && std::memcmp(shadow.viewports.data(), viewports.data(),

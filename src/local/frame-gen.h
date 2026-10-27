@@ -63,6 +63,9 @@ struct FrameInputs {
 	// The game started its upscaler's history again in this frame (a camera cut: NoteCut): no frame is generated across
 	// it, which would blend the two views.
 	bool          cut         = false;
+	// A game without a camera of its own (a profile's direct_motion_target): a fixed stand-in camera, the motion vectors and
+	// depth from its G-buffer; the vectors' unit and sign as late DLSS's (KYTY_DIRECT_MV, KYTY_DIRECT_MV_SIGN).
+	bool          direct      = false;
 	// KYTY_FRAMEGEN_BACKEND=fsr: a copy of the game's interface canvas (its alpha: where the HUD is), when known.
 	VulkanImage   ui;
 	vk::ImageView ui_view  = nullptr;
@@ -94,6 +97,9 @@ void OnDevice(vk::Instance instance, vk::PhysicalDevice physical_device, vk::Dev
 // the command-buffer calls Streamline intercepts only for its command-list state tracking
 // (disabled here) go straight to the driver.
 void BypassCommandHooks(vk::Device device);
+// A game without sub-pixel jitter (late DLSS's direct mode): the offset in pixels (right, down) the scene passes of this
+// width x height take this frame, false for any other pass. SetGraphicsDynamicParams moves the viewports by it.
+bool LateJitter(uint32_t width, uint32_t height, float& x, float& y);
 // Logs which DLL a Vulkan entry point lives in (Streamline interposer or the system loader), when frame generation is on.
 void ReportLoader(const void* address, const char* what);
 [[nodiscard]] bool Enabled();

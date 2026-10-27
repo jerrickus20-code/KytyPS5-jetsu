@@ -1756,12 +1756,43 @@ void OnDevice(vk::Instance instance, vk::PhysicalDevice physical_device, vk::Dev
 #endif
 }
 
+#ifdef KYTY_FRAMEGEN_STREAMLINE
+namespace {
+sl::Constants DirectConstants(float width, float height, bool reset); // (below: a game without a camera of its own)
+// KYTY_PERF_PROBE=<control file>: the frames per second of each 5 s window, logged with the late DLSS / NIS state; a control
+// file holding "auto" flips that switch every window (A B A B in one process), "on" / "off" sets it.
+void PerfProbe() {
+	static const char* control = std::getenv("KYTY_PERF_PROBE");
+	if (control == nullptr) return;
+	using Clock = std::chrono::steady_clock;
+	static auto     start  = Clock::now();
+	static uint32_t frames = 0;
+	++frames;
+	const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+	if (seconds < 5.0) return;
+	std::printf("Perf probe: %.1f fps over %.1f s, late DLSS/NIS %s\n", frames / seconds, seconds,
+	            g_nis_off.load() ? "off" : "on");
+	std::fflush(stdout);
+	std::string want;
+	if (std::ifstream file(control); file) file >> want;
+	bool target = g_nis_off.load();
+	if (want == "auto") target = !target;
+	else if (want == "on") target = false;
+	else if (want == "off") target = true;
+	if (target != g_nis_off.load()) g_nis_off = target;
+	start  = Clock::now();
+	frames = 0;
+}
+} // namespace
+#endif
+
 void BeforePresent(const FrameInputs* inputs, vk::Extent2D backbuffer, vk::Rect2D region,
                    vk::Format format, uint32_t image_count) {
 #ifdef KYTY_FRAMEGEN_STREAMLINE
 	if (!g_ready || g_fsr) {
 		return;
 	}
+	PerfProbe();
 	const sl::ViewportHandle viewport {0};
 	const bool               usable = inputs != nullptr && inputs->valid;
 	g_run_with    = usable ? g_run_with + 1 : 0;
@@ -1888,6 +1919,11 @@ void BeforePresent(const FrameInputs* inputs, vk::Extent2D backbuffer, vk::Rect2
 		constants.cameraFar   = 100000.0f;
 		constants.cameraFOV   = 2.0f * std::atan(1.0f / std::fabs(camera.sy));
 		constants.cameraAspectRatio = std::fabs(camera.sy / camera.sx);
+		if (inputs->direct) {
+			const auto direct = DirectConstants(width, height, false);
+			constants.mvecScale     = direct.mvecScale;
+			constants.depthInverted = direct.depthInverted;
+		}
 	}
 	if (const auto result = g_api.set_constants(constants, token, viewport); result != sl::Result::eOk &&
 	                                                                          g_presents < 8) {
@@ -2106,6 +2142,33 @@ void OnLateDispatch(ImageId depth, uint64_t depth_address, ImageId motion, uint6
 #endif
 }
 
+// Sub-pixel jitter for a game that has none (its profile's direct_motion_target): the scene passes' viewports are moved by
+// this many pixels (SetGraphicsDynamicParams), so DLSS sees a different sampling of the picture each frame; Halton(2,3),
+// 16 phases, one per late DLSS evaluation. KYTY_LATE_JITTER=0 off, KYTY_LATE_JITTER_SIGN=-1 flips the direction told to
+// DLSS (a comparison), KYTY_LATE_JITTER_SCALE the amplitude in pixels (default 1: +-0.5).
+std::atomic<uint32_t> g_jitter_phase {0};
+
+float Halton(uint32_t index, uint32_t base) {
+	float f = 1.0f, r = 0.0f;
+	while (index > 0) {
+		f /= static_cast<float>(base);
+		r += f * static_cast<float>(index % base);
+		index /= base;
+	}
+	return r;
+}
+
+void JitterFor(uint32_t phase, float& x, float& y) {
+	static const float scale = [] {
+		const char* value = std::getenv("KYTY_LATE_JITTER_SCALE");
+		return value != nullptr && std::atof(value) > 0.0 ? static_cast<float>(std::atof(value)) : 1.0f;
+	}();
+	const uint32_t index = phase % 16u + 1u;
+	x = (Halton(index, 2) - 0.5f) * scale;
+	y = (Halton(index, 3) - 0.5f) * scale;
+}
+
+std::atomic<bool> g_direct_fg {false};    // the same, for the frame's DLSS-G inputs (PrepareInputs takes it)
 std::atomic<bool> g_direct_valid {false}; // this guest frame's G-buffer draw gave late DLSS its images (OnDirectGbuffer)
 
 bool DirectCapture() {
@@ -2122,12 +2185,34 @@ void OnDirectGbuffer(ImageId depth, uint64_t depth_address, ImageId motion, uint
 	g_late_sources = {depth, motion, depth_address, motion_address, extent};
 	g_late_largest = extent;
 	g_direct_valid.store(true, std::memory_order_relaxed);
+	g_direct_fg.store(true, std::memory_order_relaxed);
 #else
 	(void)depth;
 	(void)depth_address;
 	(void)motion;
 	(void)motion_address;
 	(void)extent;
+#endif
+}
+
+bool LateJitter(uint32_t width, uint32_t height, float& x, float& y) {
+#ifdef KYTY_FRAMEGEN_STREAMLINE
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_LATE_JITTER");
+		return value == nullptr || value[0] != '0';
+	}();
+	if (!enabled || !g_late_ready || g_nis_off.load(std::memory_order_relaxed) || ::GameProfile::Current().direct_motion_target < 0 ||
+	    g_late_largest.width != width || g_late_largest.height != height || width == 0) {
+		return false;
+	}
+	JitterFor(g_jitter_phase.load(std::memory_order_relaxed), x, y);
+	return true;
+#else
+	(void)width;
+	(void)height;
+	(void)x;
+	(void)y;
+	return false;
 #endif
 }
 
@@ -2139,9 +2224,24 @@ void PrepareInputs(GraphicContext& graphics, TextureCache& cache, CommandBuffer&
                    FrameInputs& inputs) {
 	inputs.valid       = false;
 	inputs.cut         = std::exchange(g_cut, false);
-	const bool ready   = g_sources.valid && g_camera.valid;
-	const auto sources = g_sources;
-	const auto camera  = g_camera;
+	bool       ready   = g_sources.valid && g_camera.valid;
+	auto       sources = g_sources;
+	auto       camera  = g_camera;
+	// A game without a camera of its own (late DLSS's direct G-buffer capture): a fixed camera looking down +z, 60 degrees
+	// vertical field of view, near plane 0.1; DLSS-G works from the motion vectors and depth.
+	const bool direct_frame = g_direct_fg.exchange(false, std::memory_order_relaxed) &&
+	                          ::GameProfile::Current().direct_motion_target >= 0 && g_late_sources.extent.width != 0;
+	if (!ready && direct_frame) {
+		const float sy = 1.0f / std::tan(0.5f * 1.0471976f);
+		const float sx = sy * static_cast<float>(g_late_sources.extent.height) / static_cast<float>(g_late_sources.extent.width);
+		sources        = {g_late_sources.depth, g_late_sources.motion, g_late_sources.depth_address, g_late_sources.motion_address, true};
+		camera.view_proj      = {sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, 0, 0.1f, 0, 0, 1, 0};
+		camera.prev_view_proj = camera.view_proj;
+		camera.jitter_ndc     = {0, 0};
+		camera.valid          = true;
+		ready                 = true;
+		inputs.direct         = true;
+	}
 	g_sources.valid    = false;
 	g_camera.valid     = false;
 	++g_guest_frame;
@@ -3472,6 +3572,17 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 	                                          static_cast<float>(scene.extent.height), reset);
 	// (Resolved by the TAA or DLAA: no jitter left in it. KYTY_LATE_DLSS_AA: the game's jitter, its TAA not run.)
 	if (!g_late_aa) constants.jitterOffset = sl::float2(0.0f, 0.0f);
+	if (direct) {
+		float jx = 0.0f, jy = 0.0f;
+		if (LateJitter(scene.extent.width, scene.extent.height, jx, jy)) {
+			static const float sign = [] {
+				const char* value = std::getenv("KYTY_LATE_JITTER_SIGN");
+				return value != nullptr && std::atof(value) < 0 ? -1.0f : 1.0f;
+			}();
+			constants.jitterOffset = sl::float2(jx * sign, jy * sign);
+			g_jitter_phase.fetch_add(1, std::memory_order_relaxed); // (the next frame's draws take the next offset)
+		}
+	}
 	(void)g_api.set_constants(constants, *token, viewport);
 
 	// The TAA's depth and motion vectors copied (recorded), then DLSS (direct, after the recorded work).
