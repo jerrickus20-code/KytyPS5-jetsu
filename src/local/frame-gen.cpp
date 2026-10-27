@@ -3522,8 +3522,14 @@ vk::ImageView EvaluateNis(GraphicContext& graphics, vk::CommandBuffer command, c
 
 #ifdef KYTY_FRAMEGEN_STREAMLINE
 namespace {
-VulkanImage   g_late_image, g_late_depth, g_late_motion;
-vk::ImageView g_late_view = nullptr, g_late_depth_view = nullptr, g_late_motion_view = nullptr;
+// DLSS's output: a ring of 4, one per evaluation, so a frame's DLSS never writes the image an earlier frame's composite
+// may still be reading on the GPU (a single image crashed Astro's Playroom with a device loss after a minute or two).
+constexpr uint32_t kLateRing = 4;
+VulkanImage   g_late_images[kLateRing];
+vk::ImageView g_late_views[kLateRing] {};
+uint32_t      g_late_slot = 0;
+VulkanImage   g_late_depth, g_late_motion;
+vk::ImageView g_late_depth_view = nullptr, g_late_motion_view = nullptr;
 uint64_t      g_late_guest_frame = UINT64_MAX;
 uint64_t      g_late_evaluations = 0;
 vk::Extent2D  g_late_input {};
@@ -3595,8 +3601,8 @@ void LateDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const S
 	const Source sources[] {
 	    {"input", scene.image, vk::ImageAspectFlagBits::eColor, scene.layout, scene.extent.width, scene.extent.height, 8,
 	     scene.usage},
-	    {"output", g_late_image.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eShaderReadOnlyOptimal,
-	     g_late_image.extent.width, g_late_image.extent.height, 8, vk::ImageUsageFlagBits::eTransferSrc},
+	    {"output", g_late_images[g_late_slot].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eShaderReadOnlyOptimal,
+	     g_late_images[g_late_slot].extent.width, g_late_images[g_late_slot].extent.height, 8, vk::ImageUsageFlagBits::eTransferSrc},
 	    {"motion", g_late_motion.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eShaderReadOnlyOptimal,
 	     g_late_motion.extent.width, g_late_motion.extent.height, 4, vk::ImageUsageFlagBits::eTransferSrc},
 	    {"depth", g_late_depth.image, vk::ImageAspectFlagBits::eDepth, vk::ImageLayout::eShaderReadOnlyOptimal,
@@ -3725,7 +3731,8 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		return nullptr;
 	}
 	const sl::ViewportHandle viewport {1000}; // (DLAA's viewports count up from 11 with each live option change)
-	if (g_late_image.image == nullptr) {
+	g_late_slot = (g_late_slot + 1u) % kLateRing;
+	if (g_late_images[g_late_slot].image == nullptr) {
 		vk::ImageCreateInfo create {};
 		create.imageType     = vk::ImageType::e2D;
 		create.extent        = vk::Extent3D {width, height, 1};
@@ -3738,18 +3745,18 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		                       vk::ImageUsageFlagBits::eTransferDst;
 		create.sharingMode   = vk::SharingMode::eExclusive;
 		create.samples       = vk::SampleCountFlagBits::e1;
-		if (!graphics.CreateImage(create, g_late_image)) {
+		if (!graphics.CreateImage(create, g_late_images[g_late_slot])) {
 			std::printf("Late DLSS: cannot allocate the %ux%u output image\n", width, height);
 			g_late_failures = LateFailureLimit;
 			return nullptr;
 		}
 		vk::ImageViewCreateInfo view_info {};
-		view_info.image            = g_late_image.image;
+		view_info.image            = g_late_images[g_late_slot].image;
 		view_info.viewType         = vk::ImageViewType::e2D;
 		view_info.format           = create.format;
 		view_info.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-		RequireVulkanSuccess(graphics.device.createImageView(&view_info, nullptr, &g_late_view), "late DLSS output view");
-		g_late_image.state.layout = vk::ImageLayout::eUndefined;
+		RequireVulkanSuccess(graphics.device.createImageView(&view_info, nullptr, &g_late_views[g_late_slot]), "late DLSS output view");
+		g_late_images[g_late_slot].state.layout = vk::ImageLayout::eUndefined;
 	}
 	bool reset = g_late_guest_frame == UINT64_MAX || g_guest_frame != g_late_guest_frame + 1;
 	if (g_late_input != scene.extent) {
@@ -3813,14 +3820,14 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 	CopyInto(command, motion, g_late_motion);
 	DrainRecording();
 	DirectFullBarrier(command);
-	DirectLayout(command, g_late_image, vk::ImageLayout::eGeneral);
+	DirectLayout(command, g_late_images[g_late_slot], vk::ImageLayout::eGeneral);
 	const SrImage depth_copy {g_late_depth.image, g_late_depth_view, g_late_depth.format,
 	                          {g_late_depth.extent.width, g_late_depth.extent.height},
 	                          vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageUsageFlagBits::eSampled};
 	const SrImage motion_copy {g_late_motion.image, g_late_motion_view, g_late_motion.format,
 	                           {g_late_motion.extent.width, g_late_motion.extent.height},
 	                           vk::ImageLayout::eShaderReadOnlyOptimal, vk::ImageUsageFlagBits::eSampled};
-	const SrImage output {g_late_image.image, g_late_view, vk::Format::eR16G16B16A16Sfloat, {width, height},
+	const SrImage output {g_late_images[g_late_slot].image, g_late_views[g_late_slot], vk::Format::eR16G16B16A16Sfloat, {width, height},
 	                      vk::ImageLayout::eGeneral, vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled};
 	auto             color_resource  = SlResource(scene);
 	auto             depth_resource  = SlResource(depth_copy);
@@ -3841,7 +3848,7 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		return value != nullptr && value[0] == '1';
 	}();
 	if (skip_eval) {
-		DirectLayout(command, g_late_image, vk::ImageLayout::eShaderReadOnlyOptimal);
+		DirectLayout(command, g_late_images[g_late_slot], vk::ImageLayout::eShaderReadOnlyOptimal);
 		return nullptr;
 	}
 	sl::Result result = g_api.set_tag_for_frame(*token, viewport, tags, static_cast<uint32_t>(std::size(tags)), sl_command);
@@ -3856,12 +3863,12 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		return value != nullptr && value[0] == '1';
 	}();
 	if (proof && Evaluated(result)) {
-		DirectLayout(command, g_late_image, vk::ImageLayout::eTransferDstOptimal);
+		DirectLayout(command, g_late_images[g_late_slot], vk::ImageLayout::eTransferDstOptimal);
 		const vk::ClearColorValue magenta(std::array<float, 4> {1.0f, 0.0f, 1.0f, 1.0f});
 		const vk::ImageSubresourceRange range {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
-		command.clearColorImage(g_late_image.image, vk::ImageLayout::eTransferDstOptimal, &magenta, 1, &range, Direct());
+		command.clearColorImage(g_late_images[g_late_slot].image, vk::ImageLayout::eTransferDstOptimal, &magenta, 1, &range, Direct());
 	}
-	DirectLayout(command, g_late_image, vk::ImageLayout::eShaderReadOnlyOptimal);
+	DirectLayout(command, g_late_images[g_late_slot], vk::ImageLayout::eShaderReadOnlyOptimal);
 	if (!Evaluated(result)) {
 		// (The frame's stretch; the next frame tries again. The first 8 and then every 100th are logged.)
 		static uint32_t failed = 0;
@@ -3932,7 +3939,7 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		std::printf("Late DLSS: evaluated %llu time(s)\n", static_cast<unsigned long long>(g_late_evaluations));
 		std::fflush(stdout);
 	}
-	return g_late_view;
+	return g_late_views[g_late_slot];
 }
 #endif
 
