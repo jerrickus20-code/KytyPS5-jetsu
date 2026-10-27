@@ -4292,6 +4292,42 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	CommitStats::StepMark(CommitStats::Step::Acquire);
 	CommitStats::Mark(CommitStats::Phase::AcquireTargets);
 
+	// KYTY_NIS / KYTY_LATE_DLSS: the final composite reads the render-size picture scaled by NIS or DLSS super resolution
+	// (an image of its own) instead (local/frame-gen.h). Before the draw scope: the scaling is compute work of its own,
+	// which ends the rendering instance. A draw continuing a draw run keeps the previous draw's descriptors and is not
+	// scaled (logged).
+	if (FrameGen::NisEnabled() && bindings.pixel && state.ps_active && state.ps_input_info.stage.program != nullptr) {
+		const int nis_slot = FrameGen::NisCompositeSlot(state.ps_input_info.stage.program->shader_hash);
+		if (nis_slot >= 0 && bindings.pixel->images.size() > static_cast<size_t>(nis_slot)) {
+			if (m_run_active) {
+				static std::atomic<uint32_t> skipped {0};
+				if (skipped.fetch_add(1, std::memory_order_relaxed) < 4) {
+					std::printf("Late DLSS: the final composite continued a draw run; its picture is not scaled "
+					            "(KYTY_DRAW_RUN=0 avoids it)\n");
+					std::fflush(stdout);
+				}
+			} else {
+				auto& binding = bindings.pixel->images[static_cast<size_t>(nis_slot)];
+				auto& image   = m_context.GetTextureCache().GetImage(binding.image_id);
+				if (!image.info.IsDepth() && binding.image_view != nullptr) {
+					buffer.EndRendering();
+					const auto native = buffer.Handle();
+					image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead, std::nullopt,
+					              native);
+					const FrameGen::SrImage scene {image.backing.image, binding.image_view, image.backing.format,
+					                               {image.backing.extent.width, image.backing.extent.height},
+					                               image.backing.state.layout, image.backing.usage};
+					if (const auto scaled = FrameGen::EvaluateNis(m_context.GetGraphics(), native, scene,
+					                                                 &m_context.GetTextureCache());
+					    scaled != nullptr) {
+						binding.image_view = scaled;
+						binding.mip_views.clear();
+					}
+				}
+			}
+		}
+	}
+
 	// Resource preparation above may synchronously finish and restart the scheduler. From this
 	// point onward, every operation targets the current command buffer and cannot touch guest
 	// memory. Until BeginRendering() only state commands are recorded through vk_buffer; image

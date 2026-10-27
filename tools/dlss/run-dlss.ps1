@@ -5,6 +5,10 @@
 #                                          remembered in _dlss\streamline.txt, else a "streamline" folder next to this file
 #   .\run-dlss.ps1 -FrameGen 0             without frame generation (the cap and the overlay line stay)
 #   .\run-dlss.ps1 -Windowed               a window instead of fullscreen
+#   .\run-dlss.ps1 -RenderHeight 720       Demon's Souls' 3D at 1280x720 (KYTY_RENDER_HEIGHT; the output stays 4K)
+#   .\run-dlss.ps1 -LateDlss 1440          late DLSS: the finished 720p picture upscaled by DLSS to 1440p before the
+#                                          interface (KYTY_LATE_DLSS, with DLSS anti-aliasing, the game's TAA not run);
+#                                          sets -RenderHeight 720 unless given
 #   .\run-dlss.ps1 -Set KYTY_A=1,KYTY_B=2  more emulator switches (KYTY_*), after the preset's
 #   .\run-dlss.ps1 -Patch <file.json>      a game patch (--game-patch)
 # The emulator's console output goes to _dlss\run.log as well; send that file with a problem report.
@@ -13,6 +17,8 @@ param(
 	[string]$StreamlineDir = '',
 	[int]$FrameGen = 1,
 	[switch]$Windowed,
+	[int]$RenderHeight = 0,
+	[int]$LateDlss = 0,
 	[string]$Set = '',
 	[string]$Patch = ''
 )
@@ -61,6 +67,14 @@ if (Test-Path -LiteralPath $presetFile) {
 # DLSS frame generation and the in-game switches (src/local/frame-gen.h).
 if ($FrameGen -gt 0) { $env:KYTY_FRAMEGEN = "$FrameGen" }
 if ($StreamlineDir) { $env:KYTY_STREAMLINE_DIR = $StreamlineDir }
+if ($LateDlss -gt 0) {
+	if ($FrameGen -le 0) { throw '-LateDlss needs frame generation (-FrameGen 1): both use NVIDIA Streamline' }
+	if ($RenderHeight -le 0) { $RenderHeight = 720 }
+	$env:KYTY_LATE_DLSS = "$LateDlss"
+	$env:KYTY_LATE_DLSS_AA = '1'
+	if (!$env:KYTY_DLSS_PRESET) { $env:KYTY_DLSS_PRESET = 'M' }
+}
+if ($RenderHeight -gt 0) { $env:KYTY_RENDER_HEIGHT = "$RenderHeight" }
 if (!$env:KYTY_TOGGLE_FILE) { $env:KYTY_TOGGLE_FILE = (Join-Path $state 'toggles.txt') }
 foreach ($pair in ($Set -split ',' | Where-Object { $_ })) {
 	$index = $pair.IndexOf('=')
@@ -73,6 +87,7 @@ if (!$Windowed) { $arguments += '--fullscreen' }
 if ($Patch) { $arguments += @('--game-patch', (Resolve-Path -LiteralPath $Patch).Path) }
 
 Write-Host "game: $Game"
+if ($RenderHeight -gt 0) { Write-Host "render height: $RenderHeight$(if ($LateDlss -gt 0) { "; late DLSS to $LateDlss" })" }
 Write-Host "frame generation: $(if ($FrameGen -gt 0) { "on ($FrameGen generated frame per rendered one)" } else { 'off' }); Streamline: $(if ($StreamlineDir) { $StreamlineDir } else { '(streamline folder next to the emulator)' })"
 Set-Location -LiteralPath $root
 & $exe @arguments 2>&1 | Tee-Object -FilePath (Join-Path $state 'run.log')

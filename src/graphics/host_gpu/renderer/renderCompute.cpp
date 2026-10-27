@@ -555,6 +555,13 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		FrameGen::OnDispatch(program.shader_hash, bindings.images[1].image_id,
 		                     bindings.images[1].desc.info.data.address, bindings.images[3].image_id,
 		                     bindings.images[3].desc.info.data.address);
+		// KYTY_LATE_DLSS: the render-size depth and motion vectors for DLSS super resolution of the finished picture.
+		if (FrameGen::NisAvailable()) {
+			const auto& motion = m_context.GetTextureCache().GetImage(bindings.images[3].image_id);
+			FrameGen::OnLateDispatch(bindings.images[1].image_id, bindings.images[1].desc.info.data.address,
+			                         bindings.images[3].image_id, bindings.images[3].desc.info.data.address,
+			                         {motion.backing.extent.width, motion.backing.extent.height});
+		}
 	}
 	CpGaps::Phase(CpGaps::Cat::DispatchEmit);
 
@@ -648,12 +655,51 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 			     static_cast<int32_t>(r.LodBias()));
 		}
 	}
-	buffer.BindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
+	// KYTY_DLSS: DLSS (DLAA) writes the TAA's output from its color, depth and motion images instead of the TAA;
+	// KYTY_LATE_DLSS_AA: the TAA's color copied through, jittered, for the late DLSS to resolve.
+	bool                             replaced_by_dlss = false;
+	std::array<FrameGen::SrImage, 4> taa_images {};
+	FrameGen::TaaExposure            taa_exposure {};
+	if ((FrameGen::DlssEnabled() || FrameGen::LateAaEnabled()) && FrameGen::IsTaaShader(program.shader_hash) &&
+	    bindings.images.size() > FrameGen::TaaOutputSlot) {
+		auto&      texture_cache = m_context.GetTextureCache();
+		const auto sr_image      = [&](uint32_t slot) {
+            const auto& binding = bindings.images[slot];
+            auto&       image   = texture_cache.GetImage(binding.image_id);
+            return FrameGen::SrImage {image.backing.image, binding.image_view, image.backing.format,
+                                      {image.backing.extent.width, image.backing.extent.height},
+                                      image.backing.state.layout, image.backing.usage};
+		};
+		taa_images = {sr_image(FrameGen::TaaColorSlot), sr_image(FrameGen::TaaDepthSlot),
+		              sr_image(FrameGen::TaaMotionSlot), sr_image(FrameGen::TaaOutputSlot)};
+		// The TAA's exposure: its one buffer, the float at the start of the guest range (the bound range starts up to
+		// `range - size` bytes before it, for the storage-buffer offset alignment).
+		if (!bindings.buffers.empty() && bindings.buffer_sources.size() == bindings.buffers.size() &&
+		    bindings.buffers[0].buffer && bindings.buffer_sources[0].size >= sizeof(float) &&
+		    bindings.buffers[0].range != VK_WHOLE_SIZE && bindings.buffers[0].range >= bindings.buffer_sources[0].size) {
+			const auto adjustment = bindings.buffers[0].range - bindings.buffer_sources[0].size;
+			if (adjustment % sizeof(float) == 0) {
+				taa_exposure = {bindings.buffers[0].buffer, bindings.buffers[0].offset, bindings.buffers[0].range,
+				                static_cast<uint32_t>(adjustment / sizeof(float))};
+			}
+		}
+		// (Only a color image in one layout as a whole: the copy's barriers name that layout.)
+		replaced_by_dlss =
+		    FrameGen::LateAaEnabled()
+		        ? texture_cache.GetImage(bindings.images[FrameGen::TaaColorSlot].image_id).backing.subresource_states.empty() &&
+		              FrameGen::PassThroughTaa(m_context.GetGraphics(), buffer.Handle(), taa_images[0], taa_images[3],
+		                                       taa_exposure)
+		        : FrameGen::EvaluateDlss(m_context.GetGraphics(), buffer.Handle(), taa_images[0], taa_images[1],
+		                                 taa_images[2], taa_images[3], taa_exposure);
+	}
+	if (!replaced_by_dlss) buffer.BindPipeline(vk::PipelineBindPoint::eCompute, pipeline.pipeline);
 	constexpr uint32_t DispatchInitiatorOrderedAppendEnable = 1u << 3u;
 	const uint64_t     group_threads = uint64_t {std::max(input_info.threads_num[0], 1u)} *
 	                               std::max(input_info.threads_num[1], 1u) *
 	                               std::max(input_info.threads_num[2], 1u);
-	if (OrderedAppendSplitEnabled() && (mode & DispatchInitiatorOrderedAppendEnable) != 0 &&
+	if (replaced_by_dlss) {
+		// (Replaced by DLSS: nothing to dispatch; the barriers below order its writes like the TAA's.)
+	} else if (OrderedAppendSplitEnabled() && (mode & DispatchInitiatorOrderedAppendEnable) != 0 &&
 	    (ShaderRecompiler::IR::FindBinding(program.bindings, ShaderRecompiler::IR::DescriptorBindingKind::Gds) != nullptr) && group_threads <= input_info.wave_size && !input_info.lds_storage) {
 		static std::atomic_bool logged = false;
 		if (!logged.exchange(true, std::memory_order_relaxed)) {

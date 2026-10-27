@@ -6,6 +6,7 @@
 #include "common/virtualMemory.h"
 #include "kernel/memory.h"
 #include "loader/elf.h"
+#include "loader/demonsSoulsRenderSize.h"
 #include "loader/gamePatchFilter.h"
 #include "loader/runtimeLinker.h"
 #include "loader/systemContent.h"
@@ -338,6 +339,8 @@ void ApplyBuiltin(Program* main_program) {
 	if (main_program == nullptr || main_program->elf == nullptr || main_program->elf->IsShared()) {
 		return;
 	}
+	// Demon's Souls' 3D at the late DLSS's render size (KYTY_RENDER_HEIGHT; loader/demonsSoulsRenderSize.h).
+	DemonsSoulsRenderSize::Install(main_program);
 	// KYTY_ASTRO_CB_SCALE=<1-4> (default 2; 1 = off): Astro Bot (PPSA21567 01.018.000) sizes its
 	// five draw threads' command buffers {7, 7, 4, 4, 6} MiB (table at 0x8491510, read by
 	// sub_4A38C0); running out is its "too many objects/batches in this scene" assert (Bug C). In
