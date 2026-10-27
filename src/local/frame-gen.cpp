@@ -3486,6 +3486,8 @@ struct LateDump {
 	};
 	std::vector<Part> parts;
 	std::string       folder;
+	bool              next_pending = false; // the next evaluation's input goes to the part "next" (the motion's check)
+	vk::ImageLayout   next_layout  = vk::ImageLayout::eUndefined;
 };
 LateDump g_late_dump;
 
@@ -3556,6 +3558,11 @@ void LateDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const S
 		used.push_back(&source);
 		total += (size + 255u) / 256u * 256u;
 	}
+	if (!used.empty() && used[0]->name == std::string("input")) {
+		const vk::DeviceSize size = g_late_dump.parts[0].size;
+		g_late_dump.parts.push_back({"next", total, size, scene.extent.width, scene.extent.height});
+		total += (size + 255u) / 256u * 256u;
+	}
 	if (g_late_dump.buffer != VK_NULL_HANDLE) {
 		vmaDestroyBuffer(g_late_dump.allocator, g_late_dump.buffer, g_late_dump.allocation);
 		g_late_dump.buffer = VK_NULL_HANDLE;
@@ -3589,6 +3596,7 @@ void LateDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const S
 		                          &region, Direct());
 		DumpLayout(command, source.image, source.aspect, vk::ImageLayout::eTransferSrcOptimal, source.layout);
 	}
+	g_late_dump.next_pending = g_late_dump.parts.back().name == "next";
 	g_late_dump.folder   = trigger_path.parent_path().string();
 	g_late_dump.ready_at = g_late_evaluations + 30;
 	g_late_dump.pending  = true;
@@ -3779,7 +3787,25 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		}
 		return nullptr;
 	}
-	if (LateDumpWanted()) LateDumpRecord(graphics, command, scene, constants.jitterOffset.x, constants.jitterOffset.y);
+	if (g_late_dump.next_pending && g_late_dump.buffer != VK_NULL_HANDLE) {
+		g_late_dump.next_pending = false;
+		const auto& part         = g_late_dump.parts.back();
+		if (scene.extent.width == part.width && scene.extent.height == part.height && scene.layout != vk::ImageLayout::eUndefined) {
+			DumpLayout(command, scene.image, vk::ImageAspectFlagBits::eColor, scene.layout, vk::ImageLayout::eTransferSrcOptimal);
+			vk::BufferImageCopy region {};
+			region.bufferOffset     = part.offset;
+			region.imageSubresource = vk::ImageSubresourceLayers {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+			region.imageExtent      = vk::Extent3D {part.width, part.height, 1};
+			command.copyImageToBuffer(scene.image, vk::ImageLayout::eTransferSrcOptimal, vk::Buffer(g_late_dump.buffer), 1,
+			                          &region, Direct());
+			DumpLayout(command, scene.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eTransferSrcOptimal, scene.layout);
+			std::printf("Late DLSS dump: next frame's input recorded, jitter %.4f %.4f px\n",
+			            static_cast<double>(constants.jitterOffset.x), static_cast<double>(constants.jitterOffset.y));
+			std::fflush(stdout);
+		}
+	} else if (LateDumpWanted()) {
+		LateDumpRecord(graphics, command, scene, constants.jitterOffset.x, constants.jitterOffset.y);
+	}
 	g_late_guest_frame = g_guest_frame;
 	g_late_unresolved  = 0;
 	g_late_failures    = 0;
