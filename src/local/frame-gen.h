@@ -100,6 +100,8 @@ void BypassCommandHooks(vk::Device device);
 // A game without sub-pixel jitter (late DLSS's direct mode): the offset in pixels (right, down) the scene passes of this
 // width x height take this frame, false for any other pass. SetGraphicsDynamicParams moves the viewports by it.
 bool LateJitter(uint32_t width, uint32_t height, float& x, float& y);
+// KYTY_CB_DUMP: the G-buffer vertex shader's constant buffers (V# words) and SRT of 8 consecutive frames (debugging).
+void OnDirectGbufferBuffers(uint64_t vs_hash, const std::vector<std::array<uint32_t, 4>>& buffers, const std::vector<uint32_t>& srt);
 // Logs which DLL a Vulkan entry point lives in (Streamline interposer or the system loader), when frame generation is on.
 void ReportLoader(const void* address, const char* what);
 [[nodiscard]] bool Enabled();

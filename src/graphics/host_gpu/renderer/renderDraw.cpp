@@ -4031,6 +4031,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			if (motion.backing.format == vk::Format::eR16G16Sfloat && motion.backing.extent == depth.backing.extent) {
 				FrameGen::OnDirectGbuffer(state.depth_info.image_id, depth.info.data.address, state.color_info[motion_index].image_id,
 				                          motion.info.data.address, {motion.backing.extent.width, motion.backing.extent.height});
+				if (const auto* resources = state.vertex_info[0].stage ? state.vertex_info[0].stage.resources : nullptr; resources != nullptr) {
+					std::vector<std::array<uint32_t, 4>> words;
+					for (const auto& buffer: resources->buffers) words.push_back({buffer.dwords[0], buffer.dwords[1], buffer.dwords[2], buffer.dwords[3]});
+					FrameGen::OnDirectGbufferBuffers(state.vertex_info[0].stage.program->shader_hash, words, resources->flattened_srt);
+				}
 			}
 		}
 	}

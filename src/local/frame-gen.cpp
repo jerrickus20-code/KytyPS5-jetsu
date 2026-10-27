@@ -2195,6 +2195,64 @@ void OnDirectGbuffer(ImageId depth, uint64_t depth_address, ImageId motion, uint
 #endif
 }
 
+// KYTY_CB_DUMP=<trigger file>: when it appears, the first G-buffer draw of 8 consecutive frames writes its vertex shader's
+// constant buffers (V#, up to 64 KiB each) and flattened SRT next to the trigger (cb-f<k>-b<i>.bin, cb-f<k>-srt.bin), read
+// with ReadProcessMemory (an unmapped range is skipped). Finding the game's jitter (debugging).
+void OnDirectGbufferBuffers(uint64_t vs_hash, const std::vector<std::array<uint32_t, 4>>& buffers,
+                            const std::vector<uint32_t>& srt) {
+#ifdef KYTY_FRAMEGEN_STREAMLINE
+	static const char* trigger = std::getenv("KYTY_CB_DUMP");
+	if (trigger == nullptr) return;
+	static int      frames_left = 0;
+	static uint64_t last_frame  = UINT64_MAX;
+	static uint32_t polls       = 0;
+	if (frames_left == 0) {
+		if (++polls % 64 != 0) return;
+		std::error_code error;
+		if (!std::filesystem::exists(trigger, error)) return;
+		std::filesystem::rename(trigger, std::filesystem::path(trigger).concat(".done"), error);
+		frames_left = 8;
+		last_frame  = UINT64_MAX;
+	}
+	if (g_guest_frame == last_frame) return; // (the frame's first G-buffer draw only)
+	last_frame        = g_guest_frame;
+	const int  k      = 8 - frames_left;
+	const auto folder = std::filesystem::path(trigger).parent_path();
+	const auto write  = [&](const std::string& name, const void* data, size_t size) {
+		if (std::ofstream file(folder / name, std::ios::binary); file) file.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+	};
+	write("cb-f" + std::to_string(k) + "-srt.bin", srt.data(), srt.size() * 4);
+	std::string summary;
+	for (size_t i = 0; i < buffers.size() && i < 16; i++) {
+		const auto&    v      = buffers[i];
+		const uint64_t base   = (v[0] | (static_cast<uint64_t>(v[1]) << 32u)) & 0xFFFFFFFFFFFFull;
+		const uint32_t stride = (v[1] >> 16u) & 0x3FFFu;
+		const uint64_t size   = std::min<uint64_t>(stride == 0 ? v[2] : static_cast<uint64_t>(stride) * v[2], 65536u);
+		std::vector<uint8_t> bytes(static_cast<size_t>(size));
+		SIZE_T               read = 0;
+		if (base == 0 || size == 0 ||
+		    !ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(base), bytes.data(), bytes.size(), &read)) {
+			summary += " b" + std::to_string(i) + ":unreadable";
+			continue;
+		}
+		write("cb-f" + std::to_string(k) + "-b" + std::to_string(i) + ".bin", bytes.data(), read);
+		char text[64];
+		std::snprintf(text, sizeof(text), " b%zu:0x%llx+%llu", i, static_cast<unsigned long long>(base),
+		              static_cast<unsigned long long>(size));
+		summary += text;
+	}
+	std::printf("CB dump frame %d (guest frame %llu, vs 0x%016llx, srt %zu words):%s\n", k,
+	            static_cast<unsigned long long>(g_guest_frame), static_cast<unsigned long long>(vs_hash), srt.size(),
+	            summary.c_str());
+	std::fflush(stdout);
+	--frames_left;
+#else
+	(void)vs_hash;
+	(void)buffers;
+	(void)srt;
+#endif
+}
+
 bool LateJitter(uint32_t width, uint32_t height, float& x, float& y) {
 #ifdef KYTY_FRAMEGEN_STREAMLINE
 	static const bool enabled = [] {
