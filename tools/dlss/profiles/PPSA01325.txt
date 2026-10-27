@@ -1,0 +1,8 @@
+# Astro's Playroom (PPSA01325, 01.905.000). It renders natively at 3840x2160 (a deferred G-buffer, a bloom chain, a tonemap),
+# with no anti-aliasing pass and no motion vectors, so only the upscale of a smaller render size is possible here
+# (NIS, KYTY_NIS=1440): there is no camera, TAA or jitter data for frame generation or DLSS.
+title = PPSA01325
+version = 01.905.000
+# The final tonemap: it draws the HDR scene (RGBA16F, slot 0) into the 3840x2160 output.
+composite_shader = 0x67008a703cf06422
+composite_scene_slot = 0
