@@ -2229,7 +2229,11 @@ void PrepareInputs(GraphicContext& graphics, TextureCache& cache, CommandBuffer&
 	auto       camera  = g_camera;
 	// A game without a camera of its own (late DLSS's direct G-buffer capture): a fixed camera looking down +z, 60 degrees
 	// vertical field of view, near plane 0.1; DLSS-G works from the motion vectors and depth.
-	const bool direct_frame = g_direct_fg.exchange(false, std::memory_order_relaxed) &&
+	static const bool direct_fg_enabled = [] {
+		const char* value = std::getenv("KYTY_DIRECT_FG");
+		return value == nullptr || value[0] != '0';
+	}();
+	const bool direct_frame = g_direct_fg.exchange(false, std::memory_order_relaxed) && direct_fg_enabled &&
 	                          ::GameProfile::Current().direct_motion_target >= 0 && g_late_sources.extent.width != 0;
 	if (!ready && direct_frame) {
 		const float sy = 1.0f / std::tan(0.5f * 1.0471976f);
