@@ -94,6 +94,8 @@ void OnDevice(vk::Instance instance, vk::PhysicalDevice physical_device, vk::Dev
 // the command-buffer calls Streamline intercepts only for its command-list state tracking
 // (disabled here) go straight to the driver.
 void BypassCommandHooks(vk::Device device);
+// Logs which DLL a Vulkan entry point lives in (Streamline interposer or the system loader), when frame generation is on.
+void ReportLoader(const void* address, const char* what);
 [[nodiscard]] bool Enabled();
 
 // Present thread, around vkQueuePresentKHR of the image showing `inputs` (null: a frame

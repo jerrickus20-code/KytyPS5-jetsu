@@ -897,6 +897,10 @@ static void WindowCreate(WindowContext& context) {
 	// KYTY_FRAMEGEN: Streamline must be initialized before SDL loads Vulkan with the window: it then becomes the Vulkan
 	// loader (the instance, the device and the swapchain are made through it).
 	Libs::Graphics::FrameGen::Initialize();
+	// (The environment variable alone did not reach SDL here: the hint makes the interposer the Vulkan library.)
+	if (const char* vulkan_library = std::getenv("SDL_VULKAN_LIBRARY"); vulkan_library != nullptr && vulkan_library[0] != 0) {
+		SDL_SetHint(SDL_HINT_VULKAN_LIBRARY, vulkan_library);
+	}
 #endif
 	context.window = SDL_CreateWindow(KYTY_SDL_WINDOW_CAPTION, width, height, window_flags);
 

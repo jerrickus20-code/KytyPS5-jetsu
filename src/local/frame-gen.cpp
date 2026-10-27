@@ -1306,6 +1306,26 @@ bool InputsGathered() {
 	return g_sources.valid && g_camera.valid;
 }
 
+void ReportLoader(const void* address, const char* what) {
+#ifdef KYTY_FRAMEGEN_STREAMLINE
+	if (g_generate == 0 && !g_upscale) return;
+	HMODULE module = nullptr;
+	wchar_t path[MAX_PATH] = {};
+	if (address != nullptr &&
+	    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+	                       static_cast<LPCWSTR>(address), &module) &&
+	    GetModuleFileNameW(module, path, MAX_PATH) != 0) {
+		std::printf("Frame generation: %s comes from %ls\n", what, path);
+	} else {
+		std::printf("Frame generation: %s: module unknown\n", what);
+	}
+	std::fflush(stdout);
+#else
+	(void)address;
+	(void)what;
+#endif
+}
+
 void BypassCommandHooks(vk::Device device) {
 #ifdef KYTY_FRAMEGEN_STREAMLINE
 	// KYTY_FRAMEGEN_HOOKS=1 keeps Streamline's wrappers (for comparison).

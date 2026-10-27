@@ -20,6 +20,7 @@ param(
 	[string]$StreamlineDir = '',
 	[int]$FrameGen = 1,
 	[switch]$Windowed,
+	[switch]$NoAslrFix,
 	[switch]$Discover,
 	[int]$RenderHeight = 0,
 	[int]$LateDlss = 0,
@@ -116,10 +117,85 @@ $errLog = Join-Path $state 'run-error.log'
 $launch = Join-Path $state 'launch.txt'
 $quoted = ($arguments | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' '
 "$(Get-Date -Format 'HH:mm:ss') starting: $exe $quoted" | Set-Content -LiteralPath $launch
-$process = Start-Process -FilePath $exe -ArgumentList $quoted -WorkingDirectory $root -PassThru -NoNewWindow `
-	-RedirectStandardOutput $runLog -RedirectStandardError $errLog
-$process.WaitForExit()
-$code = $process.ExitCode
+# DLSS frame generation: NVIDIA's driver can refuse the Vulkan device Streamline asks for when the emulator runs without
+# bottom-up ASLR (issue #45). The emulator is started here with it forced on for this one process (a process creation
+# attribute: no Windows setting is changed). -NoAslrFix starts it the plain way.
+Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class KytyLauncher {
+	[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+	struct STARTUPINFO { public int cb; public string lpReserved; public string lpDesktop; public string lpTitle;
+		public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+		public short wShowWindow, cbReserved2; public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError; }
+	[StructLayout(LayoutKind.Sequential)] struct STARTUPINFOEX { public STARTUPINFO StartupInfo; public IntPtr lpAttributeList; }
+	[StructLayout(LayoutKind.Sequential)] struct PROCESS_INFORMATION { public IntPtr hProcess, hThread; public int dwProcessId, dwThreadId; }
+	[StructLayout(LayoutKind.Sequential)] struct SECURITY_ATTRIBUTES { public int nLength; public IntPtr lpSecurityDescriptor; public int bInheritHandle; }
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	static extern IntPtr CreateFileW(string name, uint access, uint share, ref SECURITY_ATTRIBUTES sa, uint disposition, uint flags, IntPtr template);
+	[DllImport("kernel32.dll", SetLastError = true)]
+	static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
+	[DllImport("kernel32.dll", SetLastError = true)]
+	static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returned);
+	[DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
+	[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+	static extern bool CreateProcessW(string app, string command, IntPtr pa, IntPtr ta, bool inherit, uint flags, IntPtr env, string dir, ref STARTUPINFOEX si, out PROCESS_INFORMATION pi);
+	[DllImport("kernel32.dll")] static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+	[DllImport("kernel32.dll")] static extern bool GetExitCodeProcess(IntPtr handle, out uint code);
+	[DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+
+	static IntPtr OpenLog(string path) {
+		var sa = new SECURITY_ATTRIBUTES(); sa.nLength = Marshal.SizeOf(typeof(SECURITY_ATTRIBUTES)); sa.bInheritHandle = 1;
+		IntPtr handle = CreateFileW(path, 0x40000000u, 3u, ref sa, 2u, 0x80u, IntPtr.Zero);
+		if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+		return handle;
+	}
+
+	// Starts the program with bottom-up ASLR forced on, its console output in two files; returns its exit code.
+	public static int Run(string exe, string arguments, string directory, string outPath, string errPath) {
+		IntPtr output = OpenLog(outPath), error = OpenLog(errPath), list = IntPtr.Zero, policy = IntPtr.Zero;
+		var info = new PROCESS_INFORMATION();
+		try {
+			IntPtr size = IntPtr.Zero;
+			InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
+			list = Marshal.AllocHGlobal(size);
+			if (!InitializeProcThreadAttributeList(list, 1, 0, ref size)) throw new Win32Exception(Marshal.GetLastWin32Error());
+			policy = Marshal.AllocHGlobal(8);
+			Marshal.WriteInt64(policy, 0x10000L); // PROCESS_CREATION_MITIGATION_POLICY_BOTTOM_UP_ASLR_ALWAYS_ON
+			if (!UpdateProcThreadAttribute(list, 0, new IntPtr(0x20007), policy, new IntPtr(8), IntPtr.Zero, IntPtr.Zero))
+				throw new Win32Exception(Marshal.GetLastWin32Error());
+			var si = new STARTUPINFOEX();
+			si.StartupInfo.cb = Marshal.SizeOf(typeof(STARTUPINFOEX));
+			si.StartupInfo.dwFlags = 0x100; // STARTF_USESTDHANDLES
+			si.StartupInfo.hStdOutput = output; si.StartupInfo.hStdError = error;
+			si.lpAttributeList = list;
+			if (!CreateProcessW(exe, "\"" + exe + "\" " + arguments, IntPtr.Zero, IntPtr.Zero, true, 0x80000u, IntPtr.Zero, directory, ref si, out info))
+				throw new Win32Exception(Marshal.GetLastWin32Error());
+			WaitForSingleObject(info.hProcess, 0xFFFFFFFFu);
+			uint code; GetExitCodeProcess(info.hProcess, out code);
+			return unchecked((int)code);
+		} finally {
+			if (info.hProcess != IntPtr.Zero) CloseHandle(info.hProcess);
+			if (info.hThread != IntPtr.Zero) CloseHandle(info.hThread);
+			if (list != IntPtr.Zero) { DeleteProcThreadAttributeList(list); Marshal.FreeHGlobal(list); }
+			if (policy != IntPtr.Zero) Marshal.FreeHGlobal(policy);
+			CloseHandle(output); CloseHandle(error);
+		}
+	}
+}
+'@
+$code = $null
+if ($FrameGen -gt 0 -and !$NoAslrFix) {
+	try { $code = [KytyLauncher]::Run($exe, $quoted, $root, $runLog, $errLog) }
+	catch { Add-Content -LiteralPath $launch -Value "bottom-up ASLR launch failed ($($_.Exception.Message)): starting the plain way" }
+}
+if ($null -eq $code) {
+	$process = Start-Process -FilePath $exe -ArgumentList $quoted -WorkingDirectory $root -PassThru -NoNewWindow `
+		-RedirectStandardOutput $runLog -RedirectStandardError $errLog
+	$process.WaitForExit()
+	$code = $process.ExitCode
+}
 "$(Get-Date -Format 'HH:mm:ss') emulator exited with code $code (0x$('{0:X}' -f $code))" | Add-Content -LiteralPath $launch
 Write-Host (Get-Content -LiteralPath $launch -Raw)
 exit $code

@@ -1448,6 +1448,13 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		conditional_rendering.pNext = const_cast<void*>(create_info.pNext);
 		create_info.pNext = &conditional_rendering;
 	}
+	// KYTY_FRAMEGEN: Streamline's Reflex (VK_NV_low_latency2) needs the present-id feature on, not only its extension.
+	vk::PhysicalDevicePresentIdFeaturesKHR present_id {};
+	if (HasExtension(device_extensions, VK_KHR_PRESENT_ID_EXTENSION_NAME)) {
+		present_id.presentId = VK_TRUE;
+		present_id.pNext     = const_cast<void*>(create_info.pNext);
+		create_info.pNext    = &present_id;
+	}
 	create_info.pQueueCreateInfos       = queue_create_infos.data();
 	create_info.queueCreateInfoCount    = queue_create_count;
 	create_info.enabledExtensionCount   = static_cast<uint32_t>(device_extensions.size());
@@ -1459,6 +1466,10 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	auto result = physical_device.createDevice(&create_info, nullptr, &device);
 	if (result != vk::Result::eSuccess) {
 		LOGF("vkCreateDevice failed: %s\n", vk::to_string(result).c_str());
+		std::printf("Vulkan: vkCreateDevice failed: %s (%zu extension(s), %u queue family request(s))\n", vk::to_string(result).c_str(),
+		            device_extensions.size(), static_cast<unsigned>(queue_create_count));
+		for (const char* name: device_extensions) std::printf("  extension %s\n", name);
+		std::fflush(stdout);
 		return nullptr;
 	}
 
@@ -1846,6 +1857,7 @@ void WindowContext::CreateVulkan() {
 		EXIT("Could not load Vulkan: %s\n", SDL_GetError());
 	}
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(get_instance_proc_addr);
+	Libs::Graphics::FrameGen::ReportLoader(reinterpret_cast<const void*>(get_instance_proc_addr), "vkGetInstanceProcAddr");
 
 	Vr::OpenXrInit();
 
@@ -2163,6 +2175,7 @@ void WindowContext::CreateVulkan() {
 		EXIT("Could not create device");
 	}
 	VULKAN_HPP_DEFAULT_DISPATCHER.init(graphic_ctx.device);
+	Libs::Graphics::FrameGen::ReportLoader(reinterpret_cast<const void*>(VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateDevice), "vkCreateDevice");
 	// KYTY_FRAMEGEN: the command-buffer calls go to the driver, not through Streamline's wrappers.
 	Libs::Graphics::FrameGen::BypassCommandHooks(graphic_ctx.device);
 	// Diagnostic only (KYTY_GPU_OP_PROFILE / KYTY_GPU_OP_COUNTERS): wraps dispatcher entries.
