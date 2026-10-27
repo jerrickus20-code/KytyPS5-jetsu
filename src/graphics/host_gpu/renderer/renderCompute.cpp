@@ -34,6 +34,7 @@
 #include "libs/errno.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "local/frame-gen.h"
+#include "local/profile-discover.h"
 
 #include <algorithm>
 #include <tuple>
@@ -550,18 +551,32 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	}
 	// The game's TAA pass: the 3D view of the frame, whose depth and motion vectors DLSS-G takes (local/frame-gen.h).
 	if (FrameGen::IsTaaShader(program.shader_hash)) FrameGen::NoteScene();
-	if (FrameGen::Enabled() && FrameGen::IsTaaShader(program.shader_hash) && bindings.images.size() > 3) {
-		// TAA inputs (docs/RE-DEMONS-SOULS.md): slot 1 depth, slot 3 motion vectors.
-		FrameGen::OnDispatch(program.shader_hash, bindings.images[1].image_id,
-		                     bindings.images[1].desc.info.data.address, bindings.images[3].image_id,
-		                     bindings.images[3].desc.info.data.address);
+	if (FrameGen::Enabled() && FrameGen::IsTaaShader(program.shader_hash) && bindings.images.size() > std::max(FrameGen::TaaDepthSlot(), FrameGen::TaaMotionSlot())) {
+		// TAA inputs (the game profile): the depth and the motion vector slots.
+		const auto& depth_binding  = bindings.images[FrameGen::TaaDepthSlot()];
+		const auto& motion_binding = bindings.images[FrameGen::TaaMotionSlot()];
+		FrameGen::OnDispatch(program.shader_hash, depth_binding.image_id, depth_binding.desc.info.data.address,
+		                     motion_binding.image_id, motion_binding.desc.info.data.address);
 		// KYTY_LATE_DLSS: the render-size depth and motion vectors for DLSS super resolution of the finished picture.
 		if (FrameGen::NisAvailable()) {
-			const auto& motion = m_context.GetTextureCache().GetImage(bindings.images[3].image_id);
-			FrameGen::OnLateDispatch(bindings.images[1].image_id, bindings.images[1].desc.info.data.address,
-			                         bindings.images[3].image_id, bindings.images[3].desc.info.data.address,
+			const auto& motion = m_context.GetTextureCache().GetImage(motion_binding.image_id);
+			FrameGen::OnLateDispatch(depth_binding.image_id, depth_binding.desc.info.data.address,
+			                         motion_binding.image_id, motion_binding.desc.info.data.address,
 			                         {motion.backing.extent.width, motion.backing.extent.height});
 		}
+	}
+	// KYTY_PROFILE_DISCOVER: the shader's images, for writing the game's profile (local/profile-discover.h).
+	if (ProfileDiscover::Enabled() && !bindings.images.empty()) {
+		std::vector<ProfileDiscover::ImageInfo> found;
+		auto&                                   texture_cache = m_context.GetTextureCache();
+		for (uint32_t i = 0; i < bindings.images.size() && i < 16; ++i) {
+			if (bindings.images[i].image_id == ImageId {}) continue;
+			const auto& image = texture_cache.GetImage(bindings.images[i].image_id);
+			found.push_back({i, i < program.info.images.size() && program.info.images[i].written, image.info.IsDepth(),
+			                 static_cast<uint32_t>(image.backing.format), image.backing.extent.width,
+			                 image.backing.extent.height, image.backing.layers});
+		}
+		ProfileDiscover::OnCompute(program.shader_hash, thread_group_x, thread_group_y, thread_group_z, found);
 	}
 	CpGaps::Phase(CpGaps::Cat::DispatchEmit);
 
@@ -661,7 +676,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	std::array<FrameGen::SrImage, 4> taa_images {};
 	FrameGen::TaaExposure            taa_exposure {};
 	if ((FrameGen::DlssEnabled() || FrameGen::LateAaEnabled()) && FrameGen::IsTaaShader(program.shader_hash) &&
-	    bindings.images.size() > FrameGen::TaaOutputSlot) {
+	    bindings.images.size() >= FrameGen::TaaSlotCount()) {
 		auto&      texture_cache = m_context.GetTextureCache();
 		const auto sr_image      = [&](uint32_t slot) {
             const auto& binding = bindings.images[slot];
@@ -670,8 +685,8 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
                                       {image.backing.extent.width, image.backing.extent.height},
                                       image.backing.state.layout, image.backing.usage};
 		};
-		taa_images = {sr_image(FrameGen::TaaColorSlot), sr_image(FrameGen::TaaDepthSlot),
-		              sr_image(FrameGen::TaaMotionSlot), sr_image(FrameGen::TaaOutputSlot)};
+		taa_images = {sr_image(FrameGen::TaaColorSlot()), sr_image(FrameGen::TaaDepthSlot()),
+		              sr_image(FrameGen::TaaMotionSlot()), sr_image(FrameGen::TaaOutputSlot())};
 		// The TAA's exposure: its one buffer, the float at the start of the guest range (the bound range starts up to
 		// `range - size` bytes before it, for the storage-buffer offset alignment).
 		if (!bindings.buffers.empty() && bindings.buffer_sources.size() == bindings.buffers.size() &&
@@ -686,7 +701,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 		// (Only a color image in one layout as a whole: the copy's barriers name that layout.)
 		replaced_by_dlss =
 		    FrameGen::LateAaEnabled()
-		        ? texture_cache.GetImage(bindings.images[FrameGen::TaaColorSlot].image_id).backing.subresource_states.empty() &&
+		        ? texture_cache.GetImage(bindings.images[FrameGen::TaaColorSlot()].image_id).backing.subresource_states.empty() &&
 		              FrameGen::PassThroughTaa(m_context.GetGraphics(), buffer.Handle(), taa_images[0], taa_images[3],
 		                                       taa_exposure)
 		        : FrameGen::EvaluateDlss(m_context.GetGraphics(), buffer.Handle(), taa_images[0], taa_images[1],

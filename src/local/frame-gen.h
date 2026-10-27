@@ -7,6 +7,7 @@
 // and motion-vector images. The renderer thread gathers them per guest frame; at the guest flip
 // they are copied next to the presenter's frame; the present thread hands them to Streamline and
 // presents through it (sl.interposer.dll is the process' Vulkan loader, see Initialize()).
+#include "game-profile.h"
 #include "graphics/host_gpu/graphicContext.h"
 #include "graphics/host_gpu/renderer/image/image.h"
 
@@ -24,21 +25,14 @@ class CommandBuffer;
 class TextureCache;
 namespace FrameGen {
 
-// The TAA compute shader, and the G-buffer vertex shaders sharing the constant layout below (flattened SRT
-// words), of 01.007.000 and of 01.005.000: the same shaders recompiled (KYTY_SHADER_DUMP: the same resources,
-// the vertex shaders the same translated program; the TAA images are what is read from its dispatch).
-constexpr std::array<uint64_t, 2> TaaShaders {0xa44e580f4f0cfb2bULL, 0x934a6e1197b99148ULL};
-constexpr std::array<uint64_t, 6> GbufferVertexShaders {0xf4d2e78cd1769fc7ULL, 0x08e16923875aa8e9ULL, 0x0ffcbf08be26e74eULL,
-                                                        0x1d69b5d27198446aULL, 0x5931e753b757f3bcULL, 0xa97f610824942162ULL};
+// The game's TAA compute shader and the vertex shaders holding the camera (flattened SRT words) are the game profile's
+// (game-profile.h; Demon's Souls 01.007.000 and 01.005.000 are built in: the same shaders recompiled).
 inline bool IsTaaShader(uint64_t hash) {
-	return std::find(TaaShaders.begin(), TaaShaders.end(), hash) != TaaShaders.end();
+	return ::GameProfile::Current().IsTaa(hash);
 }
 inline bool IsGbufferVertexShader(uint64_t hash) {
-	return std::find(GbufferVertexShaders.begin(), GbufferVertexShaders.end(), hash) != GbufferVertexShaders.end();
+	return ::GameProfile::Current().IsCameraShader(hash);
 }
-constexpr uint32_t SrtViewProj     = 29; // 16 floats, row-major, clip = M * world
-constexpr uint32_t SrtPrevViewProj = 45; // 12 floats: the previous frame's rows x, y and w
-constexpr uint32_t SrtJitter       = 57; // 2 floats: clip-space offset (NDC units)
 
 struct Camera {
 	std::array<float, 16> view_proj {};
@@ -229,22 +223,31 @@ struct UpscaleInputs {
 //                      in, its output image out. The rest of the frame (post-processing at render size) is unchanged.
 //   KYTY_NIS=<height>  NVIDIA Image Scaling of the finished picture to <height> lines (16:9, 720..2160) before the
 //                      game's final composite stretches it to its 4K output (KYTY_NIS_SHARPNESS, 0..1, default 0.3).
-// The final composite: the pixel shader that lays the 4K UI layer over the render-size picture (texture slot 1).
-constexpr uint64_t FinalCompositePixelShader = 0x1ad8b5870fe4d3ecULL;
-constexpr uint32_t FinalCompositeSceneSlot   = 1;
+// The final composite: the pixel shader that lays the interface over the render-size picture, and that picture's texture
+// slot (the game profile's composite_shader and composite_scene_slot).
 // HDR runs (--hdr, the HDR launcher): the game's final composite there is another pixel shader (NIS never ran in HDR,
 // 10-22). Its scene slot when NIS takes the other composites too: 0x3359df0b33704924 (frame-gen-hudless.cpp's composite of
 // a smaller scene, the scene after the HUD layer) and KYTY_NIS_SHADERS=<hash>:<slot>,... (hex hashes); -1: not one.
 [[nodiscard]] int NisHdrCompositeSlot(uint64_t pixel_shader);
 // The final composite's scene slot that NIS replaces (FinalCompositePixelShader; the HDR composites in HDR runs), or -1.
 [[nodiscard]] inline int NisCompositeSlot(uint64_t pixel_shader) {
-	return pixel_shader == FinalCompositePixelShader ? static_cast<int>(FinalCompositeSceneSlot)
-	                                                 : NisHdrCompositeSlot(pixel_shader);
+	const auto& profile = ::GameProfile::Current();
+	return profile.composite_shader != 0 && pixel_shader == profile.composite_shader
+	           ? static_cast<int>(profile.composite_scene_slot)
+	           : NisHdrCompositeSlot(pixel_shader);
 }
 // The picture DLAA makes (the full-size TAA pass's size; {0, 0} before one), for the HDR runs' composite search log.
 [[nodiscard]] vk::Extent2D NisSceneExtent();
 // The TAA dispatch's images (KYTY_SHADER_DUMP / frame capture): color, depth, motion in, the output.
-constexpr uint32_t TaaColorSlot = 0, TaaDepthSlot = 1, TaaMotionSlot = 3, TaaOutputSlot = 6;
+inline uint32_t TaaColorSlot() { return ::GameProfile::Current().taa_color; }
+inline uint32_t TaaDepthSlot() { return ::GameProfile::Current().taa_depth; }
+inline uint32_t TaaMotionSlot() { return ::GameProfile::Current().taa_motion; }
+inline uint32_t TaaOutputSlot() { return ::GameProfile::Current().taa_output; }
+// The largest texture slot the TAA pass's images use (the dispatch needs that many bound images).
+inline uint32_t TaaSlotCount() {
+	const auto& p = ::GameProfile::Current();
+	return std::max({p.taa_color, p.taa_depth, p.taa_motion, p.taa_output}) + 1u;
+}
 struct SrImage {
 	vk::Image           image  = nullptr;
 	vk::ImageView       view   = nullptr;

@@ -5,6 +5,8 @@
 #                                          remembered in _dlss\streamline.txt, else a "streamline" folder next to this file
 #   .\run-dlss.ps1 -FrameGen 0             without frame generation (the cap and the overlay line stay)
 #   .\run-dlss.ps1 -Windowed               a window instead of fullscreen
+#   .\run-dlss.ps1 -Discover              writes what a game's profile needs to _dlss\run.log (KYTY_PROFILE_DISCOVER; docs/DLSS.md,
+#                                          "Game profiles"); run the game for a minute in a scene, then send the log
 #   .\run-dlss.ps1 -RenderHeight 720       Demon's Souls' 3D at 1280x720 (KYTY_RENDER_HEIGHT; the output stays 4K)
 #   .\run-dlss.ps1 -LateDlss 1440          late DLSS: the finished 720p picture upscaled by DLSS to 1440p before the
 #                                          interface (KYTY_LATE_DLSS, with DLSS anti-aliasing, the game's TAA not run);
@@ -17,6 +19,7 @@ param(
 	[string]$StreamlineDir = '',
 	[int]$FrameGen = 1,
 	[switch]$Windowed,
+	[switch]$Discover,
 	[int]$RenderHeight = 0,
 	[int]$LateDlss = 0,
 	[string]$Set = '',
@@ -75,6 +78,7 @@ if ($LateDlss -gt 0) {
 	if (!$env:KYTY_DLSS_PRESET) { $env:KYTY_DLSS_PRESET = 'M' }
 }
 if ($RenderHeight -gt 0) { $env:KYTY_RENDER_HEIGHT = "$RenderHeight" }
+if ($Discover) { $env:KYTY_PROFILE_DISCOVER = '1' }
 if (!$env:KYTY_TOGGLE_FILE) { $env:KYTY_TOGGLE_FILE = (Join-Path $state 'toggles.txt') }
 foreach ($pair in ($Set -split ',' | Where-Object { $_ })) {
 	$index = $pair.IndexOf('=')

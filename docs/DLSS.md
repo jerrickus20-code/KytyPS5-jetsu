@@ -35,6 +35,12 @@ run-dlss.cmd -Game C:\games\PPSA01341 -StreamlineDir C:\streamline-sdk\bin\x64
 
 The switches are remembered in `_dlss\toggles.txt`. A line with the switch's new state is shown for a few seconds in the top right corner.
 
+## Game profiles
+
+DLSS frame generation, late DLSS and the render size need to know a few things about each game: which compute shader is its TAA pass and which of that pass's images are depth, motion vectors and color; which vertex shaders hold the camera and where; which pixel shader lays the interface over the 3D picture; and how its render resolution is set. A profile is a text file with those, one per game, named after its title id: `profiles\<TITLE_ID>.txt` next to the emulator. Demon's Souls (`PPSA01340`-`PPSA01342`) is built in. Without a profile the log says `Game profile: none for <title>` and only the F4 cap and the overlay work.
+
+To make one, run the game with `run-dlss.cmd -Game <folder> -Discover`, play a minute in a 3D scene, quit, and send `_dlss\run.log`: its `PROFILE` lines show each compute shader's images, each vertex shader's first constants and the pixel shaders that draw into a much larger target than the pictures they sample. The file's format is in `profiles\README.txt`.
+
 ## Switches
 
 | Switch | What it does |
@@ -44,10 +50,12 @@ The switches are remembered in `_dlss\toggles.txt`. A line with the switch's new
 | `KYTY_LATE_DLSS_AA=1` | The game's TAA is not run; DLSS anti-aliases the jittered picture as well. |
 | `KYTY_LATE_DLSS_HDR=1` | The picture handed to DLSS is HDR (default SDR). |
 | `KYTY_DLSS_PRESET=<A-O>` | The DLSS preset (`M`, `K`...). |
+| `KYTY_PROFILE_DISCOVER=1` | Logs what a game profile needs (`-Discover`). |
+| `KYTY_PROFILE_DIR=<folder>` | Where the game profiles are (default: `profiles` next to the emulator). |
 
 ## Known limits of this step
 
 - Late DLSS keeps the game's 4K output: DLSS's 2560x1440 picture is stretched to 4K by the game's own final composite and scaled to the screen. The game's own 1440p output mode, the cheat keys and the give items panel of jerrickus20-code/KytyPS5 are not ported yet.
 - If the game's final composite continues one of Jetsku's draw runs (`KYTY_DRAW_RUN`), its picture is not upscaled for that frame; the log says `Late DLSS: the final composite continued a draw run`. Then try `-Set KYTY_DRAW_RUN=0`.
-- Only Demon's Souls 01.007.000 and 01.005.000's video settings are known to the render size patch; elsewhere the log says `the video settings of a known build not found` and the 2560x1440 is kept (late DLSS then upscales it).
+- The render size patch of Demon's Souls knows 01.007.000 and 01.005.000; other games change their render size through their profile's patches (none yet), and without them the log says `ignored: no game profile with render size patches`.
 - The window is stretched to the screen as Jetsku does (no aspect-fit option).

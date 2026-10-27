@@ -7,6 +7,7 @@
 
 namespace Loader {
 struct Program;
+// (Other games: their profile's render size patches, local/game-profile.h.)
 // KYTY_RENDER_HEIGHT=<360..1440> (tools/dlss/run-dlss.ps1 -RenderHeight): Demon's Souls' performance mode - the PS5's
 // default, its 3D rendered at 2560x1440 and upscaled by the game to a 3840x2160 output - renders its 3D at that height
 // (16:9) instead. The output, the UI and what the game draws at output size stay 4K. 720 is the render size of the late

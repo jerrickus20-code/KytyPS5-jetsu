@@ -46,6 +46,7 @@
 #include "libs/errno.h"
 #include "graphics/host_gpu/renderer/gpuOpProfiler.h"
 #include "local/frame-gen.h"
+#include "local/profile-discover.h"
 
 #include <algorithm>
 #include <array>
@@ -3988,6 +3989,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (FrameGen::Enabled() && !mesh_active && state.vertex_info[0].stage) {
 		FrameGen::OnDraw(state.vertex_info[0].stage.program->shader_hash,
 		                 state.vertex_info[0].stage.resources->flattened_srt);
+	}
+	// KYTY_PROFILE_DISCOVER: the camera's constants and the final composite, for writing the game's profile.
+	if (ProfileDiscover::Enabled() && !mesh_active && state.vertex_info[0].stage) {
+		ProfileDiscover::OnVertex(state.vertex_info[0].stage.program->shader_hash,
+		                          state.vertex_info[0].stage.resources->flattened_srt);
+		if (bindings.pixel && state.ps_active && state.ps_input_info.stage.program != nullptr && state.color_count != 0) {
+			std::vector<ProfileDiscover::ImageInfo> found;
+			auto&                                   texture_cache = m_context.GetTextureCache();
+			for (uint32_t i = 0; i < bindings.pixel->images.size() && i < 16; ++i) {
+				if (bindings.pixel->images[i].image_id == ImageId {}) continue;
+				const auto& image = texture_cache.GetImage(bindings.pixel->images[i].image_id);
+				found.push_back({i, false, image.info.IsDepth(), static_cast<uint32_t>(image.backing.format),
+				                 image.backing.extent.width, image.backing.extent.height, image.backing.layers});
+			}
+			const auto target = state.color_info[0].Extent();
+			ProfileDiscover::OnPixel(state.ps_input_info.stage.program->shader_hash, target.width, target.height, found);
+		}
 	}
 	const auto stages = std::span {descriptor_stages.data(), stage_count};
 	{

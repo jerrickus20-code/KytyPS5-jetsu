@@ -188,6 +188,7 @@ jobs:
           }
           Copy-Item -LiteralPath 'docs/EXPERIMENTAL.md' -Destination (Join-Path $release 'U59-README.md')
           Copy-Item -Path 'tools/dlss/run-*' -Destination $release
+          Copy-Item -LiteralPath 'tools/dlss/profiles' -Destination $release -Recurse
           Copy-Item -LiteralPath 'docs/DLSS.md' -Destination (Join-Path $release 'DLSS-README.md')
           Copy-Item -LiteralPath 'LICENSE' -Destination $release
           # libFont's fallback font: the emulator looks for it under its working directory (the launcher starts it

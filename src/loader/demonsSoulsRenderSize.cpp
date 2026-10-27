@@ -1,5 +1,7 @@
 #include "loader/demonsSoulsRenderSize.h"
 
+#include "local/game-profile.h"
+
 #include "graphics/host_gpu/hostMemory.h"
 #include "loader/elf.h"
 #include "loader/guestCode.h"
@@ -49,6 +51,62 @@ std::optional<uint64_t> FindRenderConstant(const Program& program, std::string_v
 	return constants.size() == 1 ? std::optional(constants[0]) : std::nullopt;
 }
 
+// Another game's render size from its profile (local/game-profile.h): every patch's place is found first, and none is
+// written unless all are (a half-changed resolution would break the game's targets).
+void InstallProfile(Program& program, const char* setting) {
+	const auto& profile = GameProfile::Current();
+	if (!profile.loaded || profile.patches.empty()) {
+		std::printf("Demon's Souls render size: KYTY_RENDER_HEIGHT=%s ignored: no game profile with render size patches "
+		            "for this title (docs/DLSS.md, Game profiles)\n",
+		            setting);
+		return;
+	}
+	const auto height = static_cast<uint32_t>(std::strtoul(setting, nullptr, 10));
+	if (height < LeastRenderHeight || height > OutputHeight) {
+		std::printf("Game profile render size: KYTY_RENDER_HEIGHT=%s is not %u-%u; the game's own size kept\n", setting,
+		            LeastRenderHeight, OutputHeight);
+		return;
+	}
+	uint32_t width = 0;
+	GameProfile::RenderSizeFor(profile, height, &width);
+	struct Place {
+		uint64_t address;
+		uint32_t value, value2;
+		bool     pair;
+	};
+	std::vector<Place> places;
+	for (const auto& patch: profile.patches) {
+		if (patch.kind == GameProfile::RenderPatch::Kind::U32) {
+			const auto site = GuestCode::FindUnique(program, GuestCode::Pattern(patch.pattern));
+			if (!site || !Readable(*site + patch.offset, sizeof(uint32_t))) {
+				std::printf("Game profile render size: a patch's code (%s) of %s was not found, or not once; the game's own "
+				            "size kept\n",
+				            patch.pattern.c_str(), profile.title.c_str());
+				return;
+			}
+			places.push_back({*site + patch.offset,
+			                  patch.field == GameProfile::RenderPatch::Field::Width ? width : height, 0, false});
+		} else {
+			const uint32_t old[2] {patch.old_width, patch.old_height};
+			const auto     site = FindUniqueData(program, std::span(reinterpret_cast<const uint8_t*>(old), sizeof(old)));
+			if (!site) {
+				std::printf("Game profile render size: the resolution table %ux%u of %s was not found, or not once; the "
+				            "game's own size kept\n",
+				            patch.old_width, patch.old_height, profile.title.c_str());
+				return;
+			}
+			places.push_back({*site, width, height, true});
+		}
+	}
+	for (const auto& place: places) {
+		std::memcpy(reinterpret_cast<void*>(place.address), &place.value, sizeof(uint32_t));
+		if (place.pair) std::memcpy(reinterpret_cast<void*>(place.address + sizeof(uint32_t)), &place.value2, sizeof(uint32_t));
+	}
+	g_applied = height;
+	std::printf("Game profile render size: %s renders %ux%u (%zu patch(es))\n", profile.title.c_str(), width, height,
+	            places.size());
+}
+
 bool IsDemonsSouls() {
 	std::string title;
 	return SystemContentParamSfoGetString("TITLE_ID", &title) &&
@@ -82,8 +140,12 @@ uint32_t AppliedHeight() {
 void Install(Program* program) {
 	const char* setting = std::getenv("KYTY_RENDER_HEIGHT");
 	if (setting == nullptr || *setting == 0 || std::strcmp(setting, "auto") == 0 || program == nullptr ||
-	    program->elf == nullptr || program->elf->IsShared() || !IsDemonsSouls())
+	    program->elf == nullptr || program->elf->IsShared())
 		return;
+	if (!IsDemonsSouls()) {
+		InstallProfile(*program, setting);
+		return;
+	}
 	const auto requested = static_cast<uint32_t>(std::strtoul(setting, nullptr, 10));
 	if (requested == RenderHeight) return;
 	if (requested < LeastRenderHeight || requested > RenderHeight) {

@@ -2017,7 +2017,11 @@ void SetStaticRect(float x0, float y0, float x1, float y1) {
 }
 
 void OnDraw(uint64_t vs_hash, std::span<const uint32_t> srt) {
-	if (g_camera.valid || srt.size() < SrtJitter + 2 || !IsGbufferVertexShader(vs_hash)) {
+	const auto& profile = ::GameProfile::Current();
+	const uint32_t SrtViewProj = profile.srt_view_proj, SrtPrevViewProj = profile.srt_prev_view_proj,
+	               SrtJitter = profile.srt_jitter;
+	if (g_camera.valid || !profile.HasCamera() || srt.size() < std::max({SrtViewProj + 16u, SrtPrevViewProj + 12u, SrtJitter + 2u}) ||
+	    !IsGbufferVertexShader(vs_hash)) {
 		return;
 	}
 	for (uint32_t i = 0; i < 16; ++i) {
