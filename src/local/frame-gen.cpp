@@ -3565,6 +3565,9 @@ void LateDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const S
 		const vk::DeviceSize depth_size = static_cast<vk::DeviceSize>(g_late_depth.extent.width) * g_late_depth.extent.height * 4u;
 		g_late_dump.parts.push_back({"nextdepth", total, depth_size, g_late_depth.extent.width, g_late_depth.extent.height});
 		total += (depth_size + 255u) / 256u * 256u;
+		const vk::DeviceSize motion_size = static_cast<vk::DeviceSize>(g_late_motion.extent.width) * g_late_motion.extent.height * 4u;
+		g_late_dump.parts.push_back({"nextmotion", total, motion_size, g_late_motion.extent.width, g_late_motion.extent.height});
+		total += (motion_size + 255u) / 256u * 256u;
 	}
 	if (g_late_dump.buffer != VK_NULL_HANDLE) {
 		vmaDestroyBuffer(g_late_dump.allocator, g_late_dump.buffer, g_late_dump.allocation);
@@ -3599,7 +3602,7 @@ void LateDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const S
 		                          &region, Direct());
 		DumpLayout(command, source.image, source.aspect, vk::ImageLayout::eTransferSrcOptimal, source.layout);
 	}
-	g_late_dump.next_pending = g_late_dump.parts.back().name == "nextdepth";
+	g_late_dump.next_pending = g_late_dump.parts.back().name == "nextmotion";
 	g_late_dump.folder   = trigger_path.parent_path().string();
 	g_late_dump.ready_at = g_late_evaluations + 30;
 	g_late_dump.pending  = true;
@@ -3792,8 +3795,21 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 	}
 	if (g_late_dump.next_pending && g_late_dump.buffer != VK_NULL_HANDLE) {
 		g_late_dump.next_pending = false;
-		const auto& part         = g_late_dump.parts[g_late_dump.parts.size() - 2];
-		const auto& depth_part   = g_late_dump.parts.back();
+		const auto& part         = g_late_dump.parts[g_late_dump.parts.size() - 3];
+		const auto& depth_part   = g_late_dump.parts[g_late_dump.parts.size() - 2];
+		const auto& motion_part  = g_late_dump.parts.back();
+		if (g_late_motion.image != nullptr && g_late_motion.extent.width == motion_part.width) {
+			DumpLayout(command, g_late_motion.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eShaderReadOnlyOptimal,
+			           vk::ImageLayout::eTransferSrcOptimal);
+			vk::BufferImageCopy region {};
+			region.bufferOffset     = motion_part.offset;
+			region.imageSubresource = vk::ImageSubresourceLayers {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+			region.imageExtent      = vk::Extent3D {motion_part.width, motion_part.height, 1};
+			command.copyImageToBuffer(g_late_motion.image, vk::ImageLayout::eTransferSrcOptimal, vk::Buffer(g_late_dump.buffer), 1,
+			                          &region, Direct());
+			DumpLayout(command, g_late_motion.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eTransferSrcOptimal,
+			           vk::ImageLayout::eShaderReadOnlyOptimal);
+		}
 		if (g_late_depth.image != nullptr && g_late_depth.extent.width == depth_part.width) {
 			DumpLayout(command, g_late_depth.image, vk::ImageAspectFlagBits::eDepth, vk::ImageLayout::eShaderReadOnlyOptimal,
 			           vk::ImageLayout::eTransferSrcOptimal);
