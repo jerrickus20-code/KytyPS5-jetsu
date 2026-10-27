@@ -196,7 +196,7 @@ void Configure(GraphicContext& graphics, VulkanImage& image, vk::ImageView& view
 	create.format        = source.format;
 	create.tiling        = vk::ImageTiling::eOptimal;
 	create.initialLayout = vk::ImageLayout::eUndefined;
-	create.usage         = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
+	create.usage         = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eSampled;
 	if (attachment != nullptr) {
 		*attachment = !IsDepthFormat(source.format) &&
 		              static_cast<bool>(graphics.physical_device.getFormatProperties(source.format).optimalTilingFeatures &
@@ -3469,6 +3469,148 @@ vk::ImageView g_late_view = nullptr, g_late_depth_view = nullptr, g_late_motion_
 uint64_t      g_late_guest_frame = UINT64_MAX;
 uint64_t      g_late_evaluations = 0;
 vk::Extent2D  g_late_input {};
+
+// KYTY_LATE_DUMP=<trigger file>: when that file appears, one late DLSS frame's images are written next to it as raw files
+// (late-input / late-output RGBA16F, late-motion RG16F, late-depth D32 floats), the trigger renamed to .done. Debugging.
+struct LateDump {
+	VkBuffer      buffer     = VK_NULL_HANDLE;
+	VmaAllocation allocation = nullptr;
+	VmaAllocator  allocator  = nullptr;
+	void*         mapped     = nullptr;
+	uint64_t      ready_at   = 0;
+	bool          pending    = false;
+	struct Part {
+		std::string    name;
+		vk::DeviceSize offset = 0, size = 0;
+		uint32_t       width = 0, height = 0;
+	};
+	std::vector<Part> parts;
+	std::string       folder;
+};
+LateDump g_late_dump;
+
+void DumpLayout(vk::CommandBuffer command, vk::Image image, vk::ImageAspectFlags aspect, vk::ImageLayout from,
+                vk::ImageLayout to) {
+	vk::ImageMemoryBarrier2 barrier {};
+	barrier.srcStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
+	barrier.srcAccessMask       = vk::AccessFlagBits2::eMemoryWrite;
+	barrier.dstStageMask        = vk::PipelineStageFlagBits2::eAllCommands;
+	barrier.dstAccessMask       = vk::AccessFlagBits2::eMemoryRead | vk::AccessFlagBits2::eMemoryWrite;
+	barrier.oldLayout           = from;
+	barrier.newLayout           = to;
+	barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	barrier.image               = image;
+	barrier.subresourceRange    = {aspect, 0, 1, 0, 1};
+	vk::DependencyInfo dependency {};
+	dependency.imageMemoryBarrierCount = 1;
+	dependency.pImageMemoryBarriers    = &barrier;
+	command.pipelineBarrier2(dependency, Direct());
+}
+
+bool LateDumpWanted() {
+	static const char* trigger = std::getenv("KYTY_LATE_DUMP");
+	if (trigger == nullptr || g_late_dump.pending) return false;
+	static uint32_t calls = 0;
+	if (++calls % 30 != 0) return false;
+	std::error_code error;
+	return std::filesystem::exists(trigger, error);
+}
+
+// Records the copies (after the evaluation); LateDumpReport writes the files some frames later.
+void LateDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const SrImage& scene, float jitter_x, float jitter_y) {
+	const std::filesystem::path trigger_path(std::getenv("KYTY_LATE_DUMP"));
+	{
+		std::error_code error;
+		std::filesystem::rename(trigger_path, std::filesystem::path(trigger_path).concat(".done"), error);
+	}
+	struct Source {
+		const char*          name;
+		vk::Image            image;
+		vk::ImageAspectFlags aspect;
+		vk::ImageLayout      layout;
+		uint32_t             width, height, bytes;
+		vk::ImageUsageFlags  usage;
+	};
+	const Source sources[] {
+	    {"input", scene.image, vk::ImageAspectFlagBits::eColor, scene.layout, scene.extent.width, scene.extent.height, 8,
+	     scene.usage},
+	    {"output", g_late_image.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eShaderReadOnlyOptimal,
+	     g_late_image.extent.width, g_late_image.extent.height, 8, vk::ImageUsageFlagBits::eTransferSrc},
+	    {"motion", g_late_motion.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eShaderReadOnlyOptimal,
+	     g_late_motion.extent.width, g_late_motion.extent.height, 4, vk::ImageUsageFlagBits::eTransferSrc},
+	    {"depth", g_late_depth.image, vk::ImageAspectFlagBits::eDepth, vk::ImageLayout::eShaderReadOnlyOptimal,
+	     g_late_depth.extent.width, g_late_depth.extent.height, 4, vk::ImageUsageFlagBits::eTransferSrc},
+	};
+	vk::DeviceSize total = 0;
+	g_late_dump.parts.clear();
+	std::vector<const Source*> used;
+	for (const auto& source: sources) {
+		if (source.image == nullptr || !(source.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+		    source.layout == vk::ImageLayout::eUndefined) {
+			std::printf("Late DLSS dump: %s skipped (no image, no transfer-source usage or undefined layout)\n", source.name);
+			continue;
+		}
+		const vk::DeviceSize size = static_cast<vk::DeviceSize>(source.width) * source.height * source.bytes;
+		g_late_dump.parts.push_back({source.name, total, size, source.width, source.height});
+		used.push_back(&source);
+		total += (size + 255u) / 256u * 256u;
+	}
+	if (g_late_dump.buffer != VK_NULL_HANDLE) {
+		vmaDestroyBuffer(g_late_dump.allocator, g_late_dump.buffer, g_late_dump.allocation);
+		g_late_dump.buffer = VK_NULL_HANDLE;
+	}
+	VkBufferCreateInfo buffer_info {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+	buffer_info.size        = total;
+	buffer_info.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VmaAllocationCreateInfo allocation_info {};
+	allocation_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+	allocation_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+	VmaAllocationInfo info {};
+	if (total == 0 || vmaCreateBuffer(graphics.allocator, &buffer_info, &allocation_info, &g_late_dump.buffer,
+	                                  &g_late_dump.allocation, &info) != VK_SUCCESS || info.pMappedData == nullptr) {
+		g_late_dump.buffer = VK_NULL_HANDLE;
+		std::printf("Late DLSS dump: no readback buffer (%llu bytes)\n", static_cast<unsigned long long>(total));
+		std::fflush(stdout);
+		return;
+	}
+	g_late_dump.allocator = graphics.allocator;
+	g_late_dump.mapped    = info.pMappedData;
+	for (size_t i = 0; i < used.size(); i++) {
+		const auto& source = *used[i];
+		const auto& part   = g_late_dump.parts[i];
+		DumpLayout(command, source.image, source.aspect, source.layout, vk::ImageLayout::eTransferSrcOptimal);
+		vk::BufferImageCopy region {};
+		region.bufferOffset     = part.offset;
+		region.imageSubresource = vk::ImageSubresourceLayers {source.aspect, 0, 0, 1};
+		region.imageExtent      = vk::Extent3D {source.width, source.height, 1};
+		command.copyImageToBuffer(source.image, vk::ImageLayout::eTransferSrcOptimal, vk::Buffer(g_late_dump.buffer), 1,
+		                          &region, Direct());
+		DumpLayout(command, source.image, source.aspect, vk::ImageLayout::eTransferSrcOptimal, source.layout);
+	}
+	g_late_dump.folder   = trigger_path.parent_path().string();
+	g_late_dump.ready_at = g_late_evaluations + 30;
+	g_late_dump.pending  = true;
+	std::printf("Late DLSS dump: %zu image(s) recorded, jitter %.4f %.4f px\n", g_late_dump.parts.size(),
+	            static_cast<double>(jitter_x), static_cast<double>(jitter_y));
+	std::fflush(stdout);
+}
+
+void LateDumpReport() {
+	if (!g_late_dump.pending || g_late_evaluations < g_late_dump.ready_at) return;
+	g_late_dump.pending = false;
+	vmaInvalidateAllocation(g_late_dump.allocator, g_late_dump.allocation, 0, VK_WHOLE_SIZE);
+	for (const auto& part: g_late_dump.parts) {
+		const auto path = std::filesystem::path(g_late_dump.folder) /
+		                  ("late-" + part.name + "-" + std::to_string(part.width) + "x" + std::to_string(part.height) + ".bin");
+		if (std::ofstream file(path, std::ios::binary); file) {
+			file.write(static_cast<const char*>(g_late_dump.mapped) + part.offset, static_cast<std::streamsize>(part.size));
+		}
+		std::printf("Late DLSS dump: wrote %s\n", path.string().c_str());
+	}
+	std::fflush(stdout);
+}
 } // namespace
 
 // KYTY_LATE_DLSS: the finished picture at the render size (`scene`, the final composite's) upscaled by DLSS super
@@ -3477,6 +3619,7 @@ vk::Extent2D  g_late_input {};
 // HDR, no exposure for DLSS. The view to bind in the scene's place (shader-read-only), or null (the game's stretch).
 vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer command, const SrImage& scene,
                                TextureCache& cache) {
+	LateDumpReport();
 	if (g_late_failures >= LateFailureLimit || scene.image == nullptr || scene.view == nullptr) return nullptr;
 	// (A game without a TAA pass: its G-buffer's depth and motion vectors, no camera: DirectConstants.)
 	const bool direct = g_direct_valid.load(std::memory_order_relaxed) && ::GameProfile::Current().direct_motion_target >= 0;
@@ -3519,7 +3662,7 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		create.format        = vk::Format::eR16G16B16A16Sfloat;
 		create.tiling        = vk::ImageTiling::eOptimal;
 		create.initialLayout = vk::ImageLayout::eUndefined;
-		create.usage         = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled;
+		create.usage         = vk::ImageUsageFlagBits::eStorage | vk::ImageUsageFlagBits::eSampled | vk::ImageUsageFlagBits::eTransferSrc;
 		create.sharingMode   = vk::SharingMode::eExclusive;
 		create.samples       = vk::SampleCountFlagBits::e1;
 		if (!graphics.CreateImage(create, g_late_image)) {
@@ -3636,6 +3779,7 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		}
 		return nullptr;
 	}
+	if (LateDumpWanted()) LateDumpRecord(graphics, command, scene, constants.jitterOffset.x, constants.jitterOffset.y);
 	g_late_guest_frame = g_guest_frame;
 	g_late_unresolved  = 0;
 	g_late_failures    = 0;
