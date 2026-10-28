@@ -11,7 +11,11 @@
 #include "loader/runtimeLinker.h"
 #include "loader/systemContent.h"
 
+#include "common/paceLog.h"
+
 #include <algorithm>
+#include <cctype>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,7 +39,15 @@ struct Write {
 	std::vector<uint8_t> on;
 };
 
+// Every mod of the file (also the ones disabled in it), kept for the live switch (KYTY_LIVE_PATCH).
+struct LiveMod {
+	std::string        name;
+	std::vector<Write> writes;
+	bool               on = false;
+};
+
 struct Plan {
+	std::vector<LiveMod>     all_mods;
 	std::string              title_id;
 	std::string              version;
 	std::string              process;
@@ -116,6 +128,25 @@ bool LoadPlan(const std::filesystem::path& path, Plan* plan, std::string* error)
 
 	size_t mod_index = 0;
 	for (const auto& mod: root["mods"]) {
+		{
+			LiveMod live;
+			live.name = mod.contains("name") && mod["name"].is_string() ? mod["name"].get<std::string>() : std::string {};
+			live.on   = selection.decisions[mod_index] == ModDecision::Apply;
+			bool valid = mod.contains("memory") && mod["memory"].is_array();
+			if (valid) {
+				for (const auto& entry: mod["memory"]) {
+					Write write;
+					write.source_address = std::stoull(entry["offset"].get<std::string>(), nullptr, 16);
+					if (!ParseBytes(entry["off"].get<std::string>(), &write.off) ||
+					    !ParseBytes(entry["on"].get<std::string>(), &write.on) || write.off.size() != write.on.size()) {
+						valid = false;
+						break;
+					}
+					live.writes.push_back(std::move(write));
+				}
+			}
+			if (valid) plan->all_mods.push_back(std::move(live));
+		}
 		if (selection.decisions[mod_index++] != ModDecision::Apply) {
 			continue;
 		}
@@ -281,7 +312,167 @@ bool ApplyWrites(Plan* plan, const Program& program, std::string* error) {
 	return true;
 }
 
+// ---- Live patch switch (KYTY_LIVE_PATCH=<file>) ----
+// The mods of the patch file, translated to the running game, can be switched on/off while it runs. The file holds one
+// command per line and is renamed to <file>.done when read; the outcome of each line is written to <file>.result:
+//   <number or part of the mod's name> on|off|toggle
+//   list
+//   mark <label>          (a time marker in <KYTY_PACE_LOG>.marks.csv)
+struct LiveState {
+	std::vector<LiveMod> mods;
+	uint64_t             base = 0;
+	uint64_t             size = 0;
+	bool                 listed = false;
+};
+LiveState g_live;
+
+std::string Lower(std::string text) {
+	std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return text;
+}
+
+std::string Trim(const std::string& text) {
+	const auto first = text.find_first_not_of(" \t\r\n");
+	if (first == std::string::npos) return {};
+	const auto last = text.find_last_not_of(" \t\r\n");
+	return text.substr(first, last - first + 1);
+}
+
+bool LiveInside(uint64_t address, size_t size) {
+	return size != 0 && address >= g_live.base && address + size <= g_live.base + g_live.size;
+}
+
+bool LiveEnsureCave(const Write& write) {
+	const auto write_end = write.target_address + write.on.size();
+	for (auto page = write.target_address & ~(kPageSize - 1); page < write_end; page += kPageSize) {
+		if (std::find(g_applied_cave_pages.begin(), g_applied_cave_pages.end(), page) != g_applied_cave_pages.end()) continue;
+		const auto allocated = Libs::LibKernel::Memory::AllocateRuntimeMemory(
+		    page, kPageSize, Common::VirtualMemory::Mode::ExecuteReadWrite, "game_cheat_code_cave", true);
+		if (allocated != page) {
+			if (allocated != 0) Libs::LibKernel::Memory::FreeGuestMemory(allocated, kPageSize);
+			return false;
+		}
+		g_applied_cave_pages.push_back(page);
+	}
+	return true;
+}
+
+bool LiveSet(LiveMod* mod, bool on, std::string* error) {
+	for (const auto& write: mod->writes) {
+		if (!LiveInside(write.target_address, write.on.size()) && !LiveEnsureCave(write)) {
+			*error = "could not allocate code-cave page";
+			return false;
+		}
+	}
+	// Enabling: cave/data first, then the code that uses it; disabling: the code first.
+	for (int pass = 0; pass < 2; pass++) {
+		const bool external_pass = on ? (pass == 0) : (pass == 1);
+		for (const auto& write: mod->writes) {
+			if (!LiveInside(write.target_address, write.on.size()) != external_pass) continue;
+			const auto& bytes = on ? write.on : write.off;
+			std::memcpy(reinterpret_cast<void*>(write.target_address), bytes.data(), bytes.size());
+			if (!Common::VirtualMemory::FlushInstructionCache(write.target_address, bytes.size())) {
+				*error = "could not flush the instruction cache";
+				return false;
+			}
+		}
+	}
+	mod->on = on;
+	return true;
+}
+
+void InstallLive(Plan* plan, const Program& program, uint64_t source_base) {
+	g_live = {};
+	g_live.mods = std::move(plan->all_mods);
+	g_live.base = program.base_vaddr;
+	g_live.size = program.mapped_size;
+	for (auto& mod: g_live.mods) {
+		for (auto& write: mod.writes) Translate(program, source_base, write.source_address, &write.target_address);
+	}
+}
+
 } // namespace
+
+void PollLive() {
+	static const std::string file = [] {
+		const char* value = std::getenv("KYTY_LIVE_PATCH");
+		return std::string {value != nullptr ? value : ""};
+	}();
+	if (file.empty() || g_live.mods.empty()) return;
+	static int64_t last_check = 0;
+	const int64_t  now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	if (now - last_check < 400) return;
+	last_check = now;
+
+	namespace fs = std::filesystem;
+	std::error_code ec;
+	auto            write_list = [&](std::ofstream& out) {
+        for (size_t i = 0; i < g_live.mods.size(); i++) out << (i + 1) << " [" << (g_live.mods[i].on ? "ON " : "off") << "] " << g_live.mods[i].name << "\n";
+	};
+	if (!g_live.listed) {
+		g_live.listed = true;
+		std::ofstream out(file + ".list");
+		write_list(out);
+		::printf("Live patch: ready, %zu mods, commands from %s (list in %s.list)\n", g_live.mods.size(), file.c_str(), file.c_str());
+	}
+	if (!fs::exists(file, ec)) return;
+
+	std::vector<std::string> lines;
+	{
+		std::ifstream in(file);
+		std::string   line;
+		while (std::getline(in, line)) lines.push_back(Trim(line));
+	}
+	fs::remove(file + ".done", ec);
+	fs::rename(file, file + ".done", ec);
+
+	std::ofstream result(file + ".result");
+	for (const auto& line: lines) {
+		if (line.empty() || line[0] == '#') continue;
+		if (Lower(line) == "list") {
+			result << "list:\n";
+			write_list(result);
+			continue;
+		}
+		if (Lower(line).rfind("mark ", 0) == 0) {
+			PaceLog::NoteMark(Trim(line.substr(5)).c_str());
+			result << "ok " << line << "\n";
+			continue;
+		}
+		const auto  space = line.find_last_of(" \t");
+		const auto  verb  = Lower(space == std::string::npos ? line : line.substr(space + 1));
+		const auto  key   = Trim(space == std::string::npos ? std::string {} : line.substr(0, space));
+		if (key.empty() || (verb != "on" && verb != "off" && verb != "toggle")) {
+			result << "error " << line << " : expected '<mod number or name part> on|off|toggle'\n";
+			continue;
+		}
+		std::vector<size_t> hits;
+		if (std::all_of(key.begin(), key.end(), [](unsigned char c) { return std::isdigit(c) != 0; })) {
+			const size_t index = std::stoul(key);
+			if (index >= 1 && index <= g_live.mods.size()) hits.push_back(index - 1);
+		} else {
+			const auto needle = Lower(key);
+			for (size_t i = 0; i < g_live.mods.size(); i++) {
+				if (Lower(g_live.mods[i].name).find(needle) != std::string::npos) hits.push_back(i);
+			}
+		}
+		if (hits.size() != 1) {
+			result << "error " << line << " : " << hits.size() << " mods match\n";
+			continue;
+		}
+		auto&       mod = g_live.mods[hits[0]];
+		const bool  on  = verb == "toggle" ? !mod.on : verb == "on";
+		std::string error;
+		if (!LiveSet(&mod, on, &error)) {
+			result << "error " << line << " : " << error << "\n";
+			::printf("Live patch: %s FAILED (%s)\n", mod.name.c_str(), error.c_str());
+			continue;
+		}
+		result << "ok " << (hits[0] + 1) << " " << (on ? "on" : "off") << " " << mod.name << "\n";
+		::printf("Live patch: %s -> %s\n", mod.name.c_str(), on ? "on" : "off");
+		PaceLog::NoteMark(fmt::format("{} {}", on ? "on" : "off", mod.name.substr(0, 60)).c_str());
+	}
+}
 
 bool Apply(const std::filesystem::path& plan_path, Program* main_program,
            const std::vector<Program*>& programs) {
@@ -331,6 +522,7 @@ bool ApplyPending(Program* program) {
 		::printf("Successfully applied cheat: %s\n", name.c_str());
 	}
 	g_applied_cave_pages = std::move(g_pending_plan->cave_pages);
+	InstallLive(g_pending_plan.get(), *program, source_base);
 	g_pending_plan.reset();
 	return true;
 }

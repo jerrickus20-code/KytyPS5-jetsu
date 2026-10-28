@@ -38,6 +38,9 @@ void NoteGpuFrame(uint64_t busy_ns, uint64_t idle_ns, uint64_t starved_ns, uint6
 // (begin_us,end_us,tid,filter,ident,events,name).
 void NoteWait(uint64_t begin_ns, uint64_t end_ns, int tid, int filter, uint64_t ident, int events,
               const char* name);
+// A labelled time marker (same clock as the *_us columns): one line in <KYTY_PACE_LOG>.marks.csv
+// (t_us,label). Written by the live patch switch so A/B windows can be cut automatically.
+void NoteMark(const char* label);
 // Presented flip: writes the line.
 void NotePresent(uint64_t request_id, uint64_t vblank, uint64_t tick_ns, uint64_t present_ns);
 

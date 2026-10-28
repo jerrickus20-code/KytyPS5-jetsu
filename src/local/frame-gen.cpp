@@ -8,6 +8,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "common/emulatorConfig.h"
 #include "loader/astroFrameRate.h"
+#include "loader/gamePatch.h"
 
 #include <algorithm>
 #include <atomic>
@@ -3617,6 +3618,7 @@ void DumpLayout(vk::CommandBuffer command, vk::Image image, vk::ImageAspectFlags
 // "lo=<hex> hi=<hex>") lists every aligned match in the guest's committed memory into scan-result.txt; <folder>\poke.txt
 // ("<hex address> f32|f64|u32 <value>" per line) writes values into guest memory. Both files are renamed to .done.
 void GuestScanPoll() {
+	Loader::GamePatch::PollLive(); // KYTY_LIVE_PATCH (time-throttled inside)
 	static const char* folder = std::getenv("KYTY_GUEST_SCAN");
 	if (folder == nullptr) return;
 	static uint32_t calls = 0;

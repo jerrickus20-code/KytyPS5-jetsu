@@ -25,6 +25,7 @@ struct Entry {
 
 FILE*                  g_file = nullptr;
 FILE*                  g_waits = nullptr;
+FILE*                  g_marks = nullptr;
 std::mutex             g_mutex;
 std::array<Entry, 64>  g_entries {};
 uint64_t               g_origin_ns = 0;
@@ -59,10 +60,27 @@ bool Enabled() {
 		if (g_waits != nullptr) {
 			std::fprintf(g_waits, "begin_us,end_us,tid,filter,ident,events,name\n");
 		}
+		g_marks = std::fopen((std::string(path) + ".marks.csv").c_str(), "w");
+		if (g_marks != nullptr) {
+			std::fprintf(g_marks, "t_us,label\n");
+		}
 		g_origin_ns = NowNs();
 		return true;
 	}();
 	return enabled;
+}
+
+void NoteMark(const char* label) {
+	if (!Enabled() || g_marks == nullptr) {
+		return;
+	}
+	std::string clean(label != nullptr ? label : "");
+	for (auto& c: clean) {
+		if (c == ',' || c == '\n' || c == '\r') c = ' ';
+	}
+	std::lock_guard lock(g_mutex);
+	std::fprintf(g_marks, "%" PRIu64 ",%s\n", Rel(NowNs()), clean.c_str());
+	std::fflush(g_marks);
 }
 
 uint64_t NowNs() noexcept {

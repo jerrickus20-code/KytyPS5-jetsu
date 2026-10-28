@@ -17,6 +17,9 @@ bool Apply(const std::filesystem::path& plan_path, Program* main_program,
 bool ApplyPending(Program* program);
 // Built-in game fixes that need no patch file (KYTY_ASTRO_CB_SCALE). Main program, before it runs.
 void ApplyBuiltin(Program* main_program);
+// KYTY_LIVE_PATCH=<file>: switch the patch file's mods on/off while the game runs (polled ~2.5 times a second; call it from
+// a thread that runs every frame).
+void PollLive();
 void Clear();
 
 } // namespace GamePatch
