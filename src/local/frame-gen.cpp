@@ -3607,7 +3607,96 @@ void DumpLayout(vk::CommandBuffer command, vk::Image image, vk::ImageAspectFlags
 	command.pipelineBarrier2(dependency, Direct());
 }
 
+// KYTY_GUEST_SCAN=<folder>: debugging. Every ~30 late frames, <folder>\scan.txt ("f32 0.016666668" or "f64 ...", optional
+// "lo=<hex> hi=<hex>") lists every aligned match in the guest's committed memory into scan-result.txt; <folder>\poke.txt
+// ("<hex address> f32|f64|u32 <value>" per line) writes values into guest memory. Both files are renamed to .done.
+void GuestScanPoll() {
+	static const char* folder = std::getenv("KYTY_GUEST_SCAN");
+	if (folder == nullptr) return;
+	static uint32_t calls = 0;
+	if (++calls % 30 != 0) return;
+	namespace fs = std::filesystem;
+	const fs::path dir(folder);
+	std::error_code error;
+	if (const fs::path poke = dir / "poke.txt"; fs::exists(poke, error)) {
+		std::ifstream in(poke);
+		std::string   line, report;
+		while (std::getline(in, line)) {
+			char     kind[8] {};
+			uint64_t address = 0;
+			char     text[64] {};
+			if (std::sscanf(line.c_str(), "%llx %7s %63s", reinterpret_cast<unsigned long long*>(&address), kind, text) != 3) continue;
+			__try {
+				if (std::strcmp(kind, "f32") == 0) {
+					*reinterpret_cast<float*>(address) = std::strtof(text, nullptr);
+				} else if (std::strcmp(kind, "f64") == 0) {
+					*reinterpret_cast<double*>(address) = std::strtod(text, nullptr);
+				} else {
+					*reinterpret_cast<uint32_t*>(address) = static_cast<uint32_t>(std::strtoul(text, nullptr, 0));
+				}
+				report += "poked " + line + "\n";
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				report += "FAILED " + line + "\n";
+			}
+		}
+		in.close();
+		std::printf("Guest scan: %s", report.c_str());
+		std::fflush(stdout);
+		fs::rename(poke, fs::path(poke).concat(".done"), error);
+	}
+	if (const fs::path scan = dir / "scan.txt"; fs::exists(scan, error)) {
+		std::ifstream in(scan);
+		std::string   kind;
+		double        value = 0;
+		in >> kind >> value;
+		uint64_t lo = 0x800000000ull, hi = 0x2000000000ull;
+		for (std::string token; in >> token;) {
+			if (token.rfind("lo=", 0) == 0) lo = std::strtoull(token.c_str() + 3, nullptr, 16);
+			if (token.rfind("hi=", 0) == 0) hi = std::strtoull(token.c_str() + 3, nullptr, 16);
+		}
+		in.close();
+		const bool   is64 = kind == "f64";
+		const float  f32  = static_cast<float>(value);
+		uint32_t     want32;
+		uint64_t     want64;
+		std::memcpy(&want32, &f32, 4);
+		std::memcpy(&want64, &value, 8);
+		std::ofstream out(dir / "scan-result.txt");
+		uint64_t      address = lo;
+		uint32_t      hits    = 0;
+		while (address < hi && hits < 4000) {
+			MEMORY_BASIC_INFORMATION info {};
+			if (VirtualQuery(reinterpret_cast<void*>(address), &info, sizeof(info)) == 0) break;
+			const uint64_t base = reinterpret_cast<uint64_t>(info.BaseAddress);
+			const uint64_t end  = base + info.RegionSize;
+			const bool     readable = info.State == MEM_COMMIT && !(info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) && info.Protect != 0;
+			if (readable) {
+				out << "# region " << std::hex << base << "-" << end << " prot " << info.Protect << std::dec << "\n";
+				__try {
+					const uint64_t step = is64 ? 8 : 4;
+					for (uint64_t a = (base + step - 1) / step * step; a + step <= end && hits < 4000; a += step) {
+						const bool match = is64 ? (*reinterpret_cast<const uint64_t*>(a) == want64)
+						                        : (*reinterpret_cast<const uint32_t*>(a) == want32);
+						if (match) {
+							out << std::hex << a << std::dec << " region " << std::hex << base << std::dec << "\n";
+							hits++;
+						}
+					}
+				} __except (EXCEPTION_EXECUTE_HANDLER) {
+					out << "# read fault in region\n";
+				}
+			}
+			address = end;
+		}
+		out.close();
+		std::printf("Guest scan: %s %.9g -> %u hit(s)\n", kind.c_str(), value, hits);
+		std::fflush(stdout);
+		fs::rename(scan, fs::path(scan).concat(".done"), error);
+	}
+}
+
 bool LateDumpWanted() {
+	GuestScanPoll();
 	static const char* trigger = std::getenv("KYTY_LATE_DUMP");
 	if (trigger == nullptr || g_late_dump.pending) return false;
 	static uint32_t calls = 0;
