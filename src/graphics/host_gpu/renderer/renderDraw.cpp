@@ -4424,7 +4424,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// (profile late_input_shader: remember that draw's picture; the composite scales it instead of its own scene slot)
 	if (FrameGen::NisEnabled() && bindings.pixel && state.ps_active && state.ps_input_info.stage.program != nullptr &&
 	    ::GameProfile::Current().late_input_shader != 0 &&
-	    state.ps_input_info.stage.program->shader_hash == ::GameProfile::Current().late_input_shader && !m_run_active) {
+	    state.ps_input_info.stage.program->shader_hash == ::GameProfile::Current().late_input_shader) {
 		const auto input_slot = static_cast<size_t>(::GameProfile::Current().late_input_slot);
 		if (bindings.pixel->images.size() > input_slot && bindings.pixel->images[input_slot].image_view != nullptr &&
 		    bindings.pixel->images[input_slot].image_id != ImageId {}) {
