@@ -4,7 +4,8 @@
 # 3840x2160 target. Late DLSS (render size -> 1440p) replaces that upscaler: it takes the upscaler's render-size colour
 # (late_input_shader, slot 1) and its result is what the final composite shows (composite_shader, slot 0).
 # The F4 30 fps cap keeps the game's speed: loader/astroFrameRate rewrites the engine's frame-rate struct (30.0 fps, 33333 us,
-# 1/30 s) while the cap is on. Run with tools\dlss\run-astrobot-latedlss.cmd (needs -Set KYTY_DRAW_RUN=0).
+# 1/30 s) while the cap is on. Run with tools\dlss\run-astrobot-latedlss.cmd.
+# Below the cap the engine's frame time (the game's time step) follows the real frame time (KYTY_ASTRO_DYNAMIC_DT=0: off).
 title = PPSA21567
 version = 01.019.000
 composite_shader = 0x2c3545445213721e
