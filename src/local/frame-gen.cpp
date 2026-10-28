@@ -9,6 +9,15 @@
 #include "common/emulatorConfig.h"
 #include "loader/astroFrameRate.h"
 #include "loader/gamePatch.h"
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <tlhelp32.h>
+#undef min
+#undef max
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -130,6 +139,7 @@ bool     g_upscale_ready = false; // ... and available on the device
 Camera   g_camera;              // Kyty.Gpu: the current guest frame
 Sources  g_sources;             // Kyty.Gpu: the current guest frame
 void GuestScanPoll();
+void ThreadProfilePoll();
 uint64_t g_guest_frame = 0;     // Kyty.Gpu
 std::atomic<bool> g_scene {false}; // the current guest frame ran the TAA pass
 std::atomic<bool> g_last_scene {false}; // ... the last one the guest flipped
@@ -3614,11 +3624,83 @@ void DumpLayout(vk::CommandBuffer command, vk::Image image, vk::ImageAspectFlags
 	command.pipelineBarrier2(dependency, Direct());
 }
 
+// KYTY_THREAD_PROFILE=<file>: every 2 s, appends the CPU use of this process's busiest threads (percent of one core, from
+// GetThreadTimes) to <file>, with the thread's name (SetThreadDescription) or its id, and the guest frames presented
+// in that interval. For finding which thread limits the frame rate.
+void ThreadProfilePoll() {
+	static const char* file = std::getenv("KYTY_THREAD_PROFILE");
+	if (file == nullptr || *file == 0) return;
+	struct Prev {
+		uint64_t cpu = 0;
+	};
+	static std::unordered_map<DWORD, Prev> prev;
+	static uint64_t                         last_ms = 0, last_frame = 0, start_ms = 0;
+	const uint64_t now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	if (start_ms == 0) start_ms = now_ms;
+	if (last_ms != 0 && now_ms - last_ms < 2000) return;
+	const bool first = last_ms == 0;
+	const uint64_t span_ms = first ? 0 : now_ms - last_ms;
+	const uint64_t frames  = g_guest_frame - last_frame;
+	last_ms    = now_ms;
+	last_frame = g_guest_frame;
+
+	using GetDesc = HRESULT(WINAPI*)(HANDLE, PWSTR*);
+	static const GetDesc get_desc = reinterpret_cast<GetDesc>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetThreadDescription"));
+	struct Row {
+		double      percent;
+		DWORD       tid;
+		std::string name;
+	};
+	std::vector<Row> rows;
+	HANDLE           snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+	if (snapshot == INVALID_HANDLE_VALUE) return;
+	THREADENTRY32 entry {};
+	entry.dwSize = sizeof(entry);
+	const DWORD pid = GetCurrentProcessId();
+	for (BOOL ok = Thread32First(snapshot, &entry); ok; ok = Thread32Next(snapshot, &entry)) {
+		if (entry.th32OwnerProcessID != pid) continue;
+		HANDLE thread = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID);
+		if (thread == nullptr) continue;
+		FILETIME created, exited, kernel, user;
+		if (GetThreadTimes(thread, &created, &exited, &kernel, &user)) {
+			const auto     to64 = [](const FILETIME& f) { return (static_cast<uint64_t>(f.dwHighDateTime) << 32) | f.dwLowDateTime; };
+			const uint64_t cpu  = to64(kernel) + to64(user); // 100 ns
+			auto&          p    = prev[entry.th32ThreadID];
+			if (!first && span_ms != 0 && cpu >= p.cpu) {
+				const double percent = static_cast<double>(cpu - p.cpu) / 1e4 / static_cast<double>(span_ms) * 100.0;
+				if (percent >= 2.0) {
+					std::string name;
+					if (get_desc != nullptr) {
+						PWSTR text = nullptr;
+						if (SUCCEEDED(get_desc(thread, &text)) && text != nullptr) {
+							for (const wchar_t* c = text; *c != 0; ++c) name += *c < 128 ? static_cast<char>(*c) : '?';
+							LocalFree(text);
+						}
+					}
+					rows.push_back({percent, entry.th32ThreadID, name});
+				}
+			}
+			p.cpu = cpu;
+		}
+		CloseHandle(thread);
+	}
+	CloseHandle(snapshot);
+	if (first || rows.empty()) return;
+	std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) { return a.percent > b.percent; });
+	if (FILE* out = std::fopen(file, "a")) {
+		std::fprintf(out, "t=%.0fs fps=%.1f", static_cast<double>(now_ms - start_ms) / 1000.0, static_cast<double>(frames) * 1000.0 / static_cast<double>(span_ms));
+		for (size_t i = 0; i < rows.size() && i < 10; i++) std::fprintf(out, " | %s#%lu %.0f%%", rows[i].name.empty() ? "?" : rows[i].name.c_str(), static_cast<unsigned long>(rows[i].tid), rows[i].percent);
+		std::fprintf(out, "\n");
+		std::fclose(out);
+	}
+}
+
 // KYTY_GUEST_SCAN=<folder>: debugging. Every ~30 late frames, <folder>\scan.txt ("f32 0.016666668" or "f64 ...", optional
 // "lo=<hex> hi=<hex>") lists every aligned match in the guest's committed memory into scan-result.txt; <folder>\poke.txt
 // ("<hex address> f32|f64|u32 <value>" per line) writes values into guest memory. Both files are renamed to .done.
 void GuestScanPoll() {
 	Loader::GamePatch::PollLive(); // KYTY_LIVE_PATCH (time-throttled inside)
+	ThreadProfilePoll();           // KYTY_THREAD_PROFILE
 	static const char* folder = std::getenv("KYTY_GUEST_SCAN");
 	if (folder == nullptr) return;
 	static uint32_t calls = 0;
