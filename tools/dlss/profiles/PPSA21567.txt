@@ -1,6 +1,10 @@
-# ASTRO BOT (PPSA21567, 01.019.000), work in progress. Found so far (KYTY_PROFILE_TIMELINE): the game renders 2432x1368 (dynamic
-# resolution) into a deferred G-buffer of five colour targets (formats 43, 37, 97, 122, 97) and depth, and the final
-# composite writes a 3840x2160 target, sampling the 2432x1368 HDR scene in slot 0 and an interface image in slot 1.
+# ASTRO BOT (PPSA21567, 01.019.000; PPSA21564 is the same build). A deferred renderer with a G-buffer of five colour targets
+# (formats 43, 37, 97, 122, 97) and depth at the game's dynamic render size (1920x1080 or 2432x1368), then its own temporal
+# upscaler (a pixel shader that turns the render-size picture into a 2432x1368 or 3840x2160 one) and a final composite into a
+# 3840x2160 target. Late DLSS (render size -> 1440p) replaces that upscaler: it takes the upscaler's render-size colour
+# (late_input_shader, slot 1) and its result is what the final composite shows (composite_shader, slot 0).
+# The F4 30 fps cap keeps the game's speed: loader/astroFrameRate rewrites the engine's frame-rate struct (30.0 fps, 33333 us,
+# 1/30 s) while the cap is on. Run with tools\dlss\run-astrobot-latedlss.cmd (needs -Set KYTY_DRAW_RUN=0).
 title = PPSA21567
 version = 01.019.000
 composite_shader = 0x2c3545445213721e

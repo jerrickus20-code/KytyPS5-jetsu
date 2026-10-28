@@ -49,6 +49,15 @@ depth and motion vectors directly (`direct_motion_target`) and the game's own su
 `direct_jitter_offset`). The render size comes from the "Fixed render resolution 1280x720" mod of the game's patch file. Its
 post-processing (bloom, depth of field, tonemap) still runs at 720p before the DLSS pass.
 
+### ASTRO BOT (PPSA21567 and PPSA21564, 01.019.000)
+
+`profiles/PPSA21567.txt` and `tools/dlss/run-astrobot-latedlss.cmd`: late DLSS from the game's render-size picture (1920x1080,
+or 2432x1368 as its dynamic resolution moves) to 1440p, frame generation, and the F4 30 fps cap at the game's normal speed.
+The game's own temporal upscaler is a pixel shader (`late_input_shader`): its render-size colour (slot 1) is what DLSS
+upscales, and the result replaces the final composite's scene (`composite_shader`, slot 0). The G-buffer's depth and motion
+vectors come from `direct_motion_target`. A size change inside the same DLSS mode keeps DLSS's history. The render size
+itself is not lowered to 720p yet (the game uses its size in many places; a single patch of its size getter crashes the GPU).
+
 ## Switches
 
 | Switch | What it does |
