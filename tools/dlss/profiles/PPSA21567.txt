@@ -8,3 +8,4 @@ composite_scene_slot = 0
 # The G-buffer (dumped with KYTY_GBUFFER_DUMP): target 0 albedo (fmt 43), 1 (fmt 37), 2 normals (RGBA16F), 3 (fmt 122),
 # 4 RGBA16F whose x and y are the motion vectors (UV units, about 1e-3 for the camera's motion); depth is standard (far = 1).
 direct_motion_target = 4
+no_frame_cap = 0

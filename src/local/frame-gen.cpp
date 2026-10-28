@@ -3666,6 +3666,7 @@ void GuestScanPoll() {
 		uint64_t     want64;
 		std::memcpy(&want32, &f32, 4);
 		std::memcpy(&want64, &value, 8);
+		if (kind == "u32") want32 = static_cast<uint32_t>(value);
 		std::ofstream out(dir / "scan-result.txt");
 		uint64_t      address = lo;
 		uint32_t      hits    = 0;
