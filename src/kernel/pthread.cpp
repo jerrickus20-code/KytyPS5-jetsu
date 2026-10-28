@@ -3440,6 +3440,24 @@ static void CleanupThread(void* arg) {
 	thread->almost_done = true;
 }
 
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+// Gives the host thread behind a guest thread a Windows thread description ("<guest name> e=<entry>"), so profilers
+// (KYTY_THREAD_PROFILE, debuggers) can tell the guest threads apart.
+static void NameHostThread(DWORD host_id, const std::string& name, uint64_t entry) {
+	using SetDesc = HRESULT(WINAPI*)(HANDLE, PCWSTR);
+	static const SetDesc set_desc = reinterpret_cast<SetDesc>(GetProcAddress(GetModuleHandleA("kernel32.dll"), "SetThreadDescription"));
+	if (set_desc == nullptr) return;
+	char text[160];
+	snprintf(text, sizeof(text), "%s e=%llx", name.c_str(), static_cast<unsigned long long>(entry & 0xffffffffull));
+	std::wstring wide;
+	for (const char* c = text; *c != 0; ++c) wide += static_cast<wchar_t>(static_cast<unsigned char>(*c));
+	if (HANDLE handle = OpenThread(THREAD_SET_LIMITED_INFORMATION, FALSE, host_id)) {
+		set_desc(handle, wide.c_str());
+		CloseHandle(handle);
+	}
+}
+#endif
+
 /// Entry point of the host thread behind every guest thread: records its identity, applies the guest
 /// priority, then runs the guest entry function on the guest stack and cleans up afterwards.
 /// @param arg the Pthread that this host thread runs
@@ -3467,6 +3485,9 @@ static void* RunThread(void* arg) {
 	os_thread_id = GetHostThreadId();
 #endif
 	thread->host_thread_id = os_thread_id;
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	NameHostThread(static_cast<DWORD>(os_thread_id), thread->name, reinterpret_cast<uint64_t>(thread->entry));
+#endif
 #if KYTY_PLATFORM == KYTY_PLATFORM_LINUX
 	if (!thread->name.empty()) {
 #if defined(__APPLE__)
@@ -3886,6 +3907,11 @@ int KYTY_SYSV_ABI PthreadRename(Pthread thread, const char* name) {
 	}
 
 	thread->name = std::string(name);
+#if KYTY_PLATFORM == KYTY_PLATFORM_WINDOWS
+	if (thread->host_thread_id != 0) {
+		NameHostThread(static_cast<DWORD>(thread->host_thread_id), thread->name, reinterpret_cast<uint64_t>(thread->entry));
+	}
+#endif
 
 	return OK;
 }
