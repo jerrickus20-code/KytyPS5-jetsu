@@ -127,6 +127,7 @@ bool     g_upscale     = false; // KYTY_UPSCALER=dlss: DLSS super resolution ask
 bool     g_upscale_ready = false; // ... and available on the device
 Camera   g_camera;              // Kyty.Gpu: the current guest frame
 Sources  g_sources;             // Kyty.Gpu: the current guest frame
+void GuestScanPoll();
 uint64_t g_guest_frame = 0;     // Kyty.Gpu
 std::atomic<bool> g_scene {false}; // the current guest frame ran the TAA pass
 std::atomic<bool> g_last_scene {false}; // ... the last one the guest flipped
@@ -2340,6 +2341,7 @@ void PrepareInputs(GraphicContext& graphics, TextureCache& cache, CommandBuffer&
 	g_sources.valid    = false;
 	g_camera.valid     = false;
 	++g_guest_frame;
+	GuestScanPoll();
 	if (!ready) {
 		return;
 	}
@@ -3696,7 +3698,6 @@ void GuestScanPoll() {
 }
 
 bool LateDumpWanted() {
-	GuestScanPoll();
 	static const char* trigger = std::getenv("KYTY_LATE_DUMP");
 	if (trigger == nullptr || g_late_dump.pending) return false;
 	static uint32_t calls = 0;
