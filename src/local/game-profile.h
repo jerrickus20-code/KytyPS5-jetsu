@@ -53,6 +53,10 @@ struct Profile {
 	uint32_t srt_view_proj = 0, srt_prev_view_proj = 0, srt_jitter = 0;
 	uint64_t composite_shader     = 0;
 	uint32_t composite_scene_slot = 1;
+	// late_input_shader / late_input_slot: the picture late DLSS upscales is that pixel shader's texture (slot), e.g. a game's
+	// own temporal upscaler's render-size input; DLSS's result still goes to the composite's scene slot. 0: the composite's own.
+	uint64_t late_input_shader    = 0;
+	uint32_t late_input_slot      = 0;
 	uint32_t aspect_w = 16, aspect_h = 9;
 	int      direct_motion_target = -1; // see the file format above; -1: none
 	int      direct_jitter_buffer = -1, direct_jitter_offset = -1;

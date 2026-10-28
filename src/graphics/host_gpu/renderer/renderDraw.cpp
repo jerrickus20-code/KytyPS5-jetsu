@@ -4421,6 +4421,17 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	// (an image of its own) instead (local/frame-gen.h). Before the draw scope: the scaling is compute work of its own,
 	// which ends the rendering instance. A draw continuing a draw run keeps the previous draw's descriptors and is not
 	// scaled (logged).
+	// (profile late_input_shader: remember that draw's picture; the composite scales it instead of its own scene slot)
+	if (FrameGen::NisEnabled() && bindings.pixel && state.ps_active && state.ps_input_info.stage.program != nullptr &&
+	    ::GameProfile::Current().late_input_shader != 0 &&
+	    state.ps_input_info.stage.program->shader_hash == ::GameProfile::Current().late_input_shader && !m_run_active) {
+		const auto input_slot = static_cast<size_t>(::GameProfile::Current().late_input_slot);
+		if (bindings.pixel->images.size() > input_slot && bindings.pixel->images[input_slot].image_view != nullptr &&
+		    bindings.pixel->images[input_slot].image_id != ImageId {}) {
+			m_late_input_id   = bindings.pixel->images[input_slot].image_id;
+			m_late_input_view = bindings.pixel->images[input_slot].image_view;
+		}
+	}
 	if (FrameGen::NisEnabled() && bindings.pixel && state.ps_active && state.ps_input_info.stage.program != nullptr) {
 		const int nis_slot = FrameGen::NisCompositeSlot(state.ps_input_info.stage.program->shader_hash);
 		if (nis_slot >= 0 && bindings.pixel->images.size() > static_cast<size_t>(nis_slot)) {
@@ -4433,13 +4444,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				}
 			} else {
 				auto& binding = bindings.pixel->images[static_cast<size_t>(nis_slot)];
-				auto& image   = m_context.GetTextureCache().GetImage(binding.image_id);
-				if (!image.info.IsDepth() && binding.image_view != nullptr) {
+				// (the late input picture, when the profile names one and its draw ran this frame)
+				const bool   from_input = ::GameProfile::Current().late_input_shader != 0 && m_late_input_id != ImageId {} &&
+				                          m_late_input_view != nullptr;
+				auto&        image      = m_context.GetTextureCache().GetImage(from_input ? m_late_input_id : binding.image_id);
+				const auto   scene_view = from_input ? m_late_input_view : binding.image_view;
+				m_late_input_id   = {};
+				m_late_input_view = nullptr;
+				if (!image.info.IsDepth() && scene_view != nullptr) {
 					buffer.EndRendering();
 					const auto native = buffer.Handle();
 					image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead, std::nullopt,
 					              native);
-					const FrameGen::SrImage scene {image.backing.image, binding.image_view, image.backing.format,
+					const FrameGen::SrImage scene {image.backing.image, scene_view, image.backing.format,
 					                               {image.backing.extent.width, image.backing.extent.height},
 					                               image.backing.state.layout, image.backing.usage};
 					if (const auto scaled = FrameGen::EvaluateNis(m_context.GetGraphics(), native, scene,

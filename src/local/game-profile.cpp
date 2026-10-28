@@ -128,6 +128,10 @@ bool Parse(std::string_view text, Profile* profile, std::string* error) {
 			if (!u32(&profile->srt_jitter)) return fail("srt_jitter: number expected");
 		} else if (key == "composite_shader") {
 			if (!Number(value, &profile->composite_shader)) return fail("composite_shader: hex hash expected");
+		} else if (key == "late_input_shader") {
+			if (!Number(value, &profile->late_input_shader)) return fail("late_input_shader: hex hash expected");
+		} else if (key == "late_input_slot") {
+			if (!u32(&profile->late_input_slot)) return fail("late_input_slot: number expected");
 		} else if (key == "composite_scene_slot") {
 			if (!u32(&profile->composite_scene_slot)) return fail("composite_scene_slot: number expected");
 		} else if (key == "direct_motion_target") {

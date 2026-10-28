@@ -1493,6 +1493,8 @@ private:
 	bool                         m_run_keepable  = false;
 	bool          m_run_prev_valid     = false; // m_run.valid when the committed draw began
 	bool          m_run_active         = false; // the draw takes the delta path
+	ImageId                m_late_input_id {};       // profile late_input_shader: its draw's texture, for the composite
+	vk::ImageView          m_late_input_view = nullptr;
 	ImageId                m_gbuffer_dump_depth {};  // KYTY_GBUFFER_DUMP: the latest G-buffer draw (local/frame-gen.h)
 	std::vector<ImageId>   m_gbuffer_dump_colors;
 	uint64_t      m_rebind_epoch       = 0;     // KYTY_REBIND_AFTER_JOIN: UnregisterEpoch at resolution

@@ -9,3 +9,7 @@ composite_scene_slot = 0
 # 4 RGBA16F whose x and y are the motion vectors (UV units, about 1e-3 for the camera's motion); depth is standard (far = 1).
 direct_motion_target = 4
 no_frame_cap = 0
+# The game's own temporal upscaler (a pixel shader: render-size colour in slot 0 + a second render-size image, plus a
+# 2432x1368 history) is replaced: late DLSS upscales its render-size input to 1440p and the final composite shows that.
+late_input_shader = 0x2936e5eca99d75e7
+late_input_slot = 0
