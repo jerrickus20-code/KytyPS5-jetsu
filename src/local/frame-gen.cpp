@@ -3571,6 +3571,7 @@ vk::ImageView g_late_depth_view = nullptr, g_late_motion_view = nullptr;
 uint64_t      g_late_guest_frame = UINT64_MAX;
 uint64_t      g_late_evaluations = 0;
 vk::Extent2D  g_late_input {};
+int           g_late_mode = -1; // (the DLSS mode set; a new input size within the same mode keeps DLSS's history: dynamic resolution)
 
 // KYTY_LATE_DUMP=<trigger file>: when that file appears, one late DLSS frame's images are written next to it as raw files
 // (late-input / late-output RGBA16F, late-motion RG16F, late-depth D32 floats), the trigger renamed to .done. Debugging.
@@ -3953,8 +3954,18 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 		g_late_images[g_late_slot].state.layout = vk::ImageLayout::eUndefined;
 	}
 	bool reset = g_late_guest_frame == UINT64_MAX || g_guest_frame != g_late_guest_frame + 1;
+	const float late_share = static_cast<float>(scene.extent.height) / static_cast<float>(height);
+	const auto  late_mode  = (scene.extent.width == width && scene.extent.height == height) ? sl::DLSSMode::eDLAA
+	                         : late_share >= 0.62f ? sl::DLSSMode::eMaxQuality
+	                         : late_share >= 0.55f ? sl::DLSSMode::eBalanced
+	                         : late_share >= 0.45f ? sl::DLSSMode::eMaxPerformance
+	                                               : sl::DLSSMode::eUltraPerformance;
+	if (g_late_input != scene.extent && g_late_input.width != 0 && g_late_mode == static_cast<int>(late_mode) &&
+	    ::GameProfile::Current().late_input_shader != 0) {
+		g_late_input = scene.extent; // (a game with dynamic resolution: the size changed, the mode did not)
+	}
 	if (g_late_input != scene.extent) {
-		const float share = static_cast<float>(scene.extent.height) / static_cast<float>(height);
+		const float share = late_share;
 		sl::DLSSOptions options {};
 		// (DLAA only for a render size equal to the output: 2432x1368 into 2560x1440 is a super resolution case)
 		options.mode = (scene.extent.width == width && scene.extent.height == height) ? sl::DLSSMode::eDLAA
@@ -3979,6 +3990,7 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 			return nullptr;
 		}
 		g_late_input = scene.extent;
+		g_late_mode  = static_cast<int>(options.mode);
 		reset        = true;
 		std::printf("Late DLSS: %ux%u -> %ux%u, mode %u, preset %u (13 = M), picture format %d, hdr %d\n", scene.extent.width,
 		            scene.extent.height, width, height, static_cast<uint32_t>(options.mode),
