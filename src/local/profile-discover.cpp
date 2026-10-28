@@ -64,7 +64,22 @@ bool TimelineActive() {
 	if (file.empty()) return false;
 	static std::atomic<bool> started {false};
 	static std::atomic<int64_t> last_check {0};
-	if (g_timeline_lines >= kMaxTimelineLines) return false;
+	if (g_timeline_lines >= kMaxTimelineLines) {
+		// Again: creating <file>.again records another round (checked twice a second).
+		const int64_t again_now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		static std::atomic<int64_t> again_check {0};
+		if (again_now - again_check.load(std::memory_order_relaxed) < 500) return false;
+		again_check.store(again_now, std::memory_order_relaxed);
+		std::error_code again_ec;
+		const std::string again_file = file + ".again";
+		if (!std::filesystem::exists(again_file, again_ec)) return false;
+		std::filesystem::remove(again_file, again_ec);
+		std::scoped_lock lock {g_mutex};
+		g_timeline_lines = 0;
+		std::printf("TL start again\n");
+		std::fflush(stdout);
+		return true;
+	}
 	if (started.load(std::memory_order_relaxed)) return true;
 	const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 	if (now - last_check.load(std::memory_order_relaxed) < 500) return false;
