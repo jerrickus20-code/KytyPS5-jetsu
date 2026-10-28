@@ -273,6 +273,17 @@ struct SrImage {
 	vk::ImageLayout     layout = vk::ImageLayout::eUndefined;
 	vk::ImageUsageFlags usage {};
 };
+// KYTY_GBUFFER_DUMP=<trigger file>: debugging a new game's profile. When that file exists, at the profile's composite draw
+// the images given by GbufferDumpWanted's caller (the G-buffer's color targets and depth) are copied out and written next to
+// the file as gbuf-<name>-<format>-<w>x<h>.bin (the trigger renamed to .done).
+struct DumpImage {
+	std::string name;
+	SrImage     image;
+	bool        depth = false;
+};
+[[nodiscard]] bool GbufferDumpEnabled();
+[[nodiscard]] bool GbufferDumpWanted();
+void               GbufferDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const std::vector<DumpImage>& images);
 // The TAA's exposure: the game's TAA multiplies its color input by the first float of this range (eye adaptation,
 // written on the GPU by the pass before it); DLSS's result gets the same factor (null buffer: none).
 struct TaaExposure {

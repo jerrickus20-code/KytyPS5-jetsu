@@ -3700,6 +3700,47 @@ void GuestScanPoll() {
 	}
 }
 
+// KYTY_GBUFFER_DUMP (frame-gen.h): copies of a draw's targets, written some frames later.
+struct GbufferDump {
+	VkBuffer      buffer     = VK_NULL_HANDLE;
+	VmaAllocation allocation = nullptr;
+	VmaAllocator  allocator  = nullptr;
+	void*         mapped     = nullptr;
+	uint32_t      wait       = 0;
+	bool          pending    = false;
+	struct Part {
+		std::string    name;
+		vk::DeviceSize offset = 0, size = 0;
+		uint32_t       width = 0, height = 0;
+		int            format = 0;
+	};
+	std::vector<Part> parts;
+	std::string       folder;
+};
+GbufferDump g_gbuffer_dump;
+
+uint32_t DumpFormatBytes(vk::Format format) {
+	switch (format) {
+		case vk::Format::eR8Unorm: return 1;
+		case vk::Format::eR16Sfloat:
+		case vk::Format::eR8G8Unorm: return 2;
+		case vk::Format::eR8G8B8A8Unorm:
+		case vk::Format::eR8G8B8A8Srgb:
+		case vk::Format::eB8G8R8A8Unorm:
+		case vk::Format::eB8G8R8A8Srgb:
+		case vk::Format::eR16G16Sfloat:
+		case vk::Format::eR16G16Unorm:
+		case vk::Format::eB10G11R11UfloatPack32:
+		case vk::Format::eA2B10G10R10UnormPack32:
+		case vk::Format::eR32Sfloat:
+		case vk::Format::eD32Sfloat:
+		case vk::Format::eD32SfloatS8Uint: return 4;
+		case vk::Format::eR16G16B16A16Sfloat:
+		case vk::Format::eR16G16B16A16Unorm: return 8;
+		default: return 0;
+	}
+}
+
 bool LateDumpWanted() {
 	static const char* trigger = std::getenv("KYTY_LATE_DUMP");
 	if (trigger == nullptr || g_late_dump.pending) return false;
@@ -4464,6 +4505,106 @@ void Toggle(Switch which) {
 	std::lock_guard lock(g_toggle_mutex);
 	g_notice       = note;
 	g_notice_until = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+}
+
+bool GbufferDumpEnabled() {
+	static const bool enabled = std::getenv("KYTY_GBUFFER_DUMP") != nullptr;
+	return enabled;
+}
+
+bool GbufferDumpWanted() {
+	static const char* trigger = std::getenv("KYTY_GBUFFER_DUMP");
+	if (trigger == nullptr) return false;
+	if (g_gbuffer_dump.pending) {
+		if (++g_gbuffer_dump.wait < 30) return false;
+		g_gbuffer_dump.pending = false;
+		vmaInvalidateAllocation(g_gbuffer_dump.allocator, g_gbuffer_dump.allocation, 0, VK_WHOLE_SIZE);
+		for (const auto& part: g_gbuffer_dump.parts) {
+			const auto path = std::filesystem::path(g_gbuffer_dump.folder) /
+			                  ("gbuf-" + part.name + "-f" + std::to_string(part.format) + "-" + std::to_string(part.width) + "x" +
+			                   std::to_string(part.height) + ".bin");
+			if (std::ofstream file(path, std::ios::binary); file) {
+				file.write(static_cast<const char*>(g_gbuffer_dump.mapped) + part.offset, static_cast<std::streamsize>(part.size));
+			}
+			std::printf("G-buffer dump: wrote %s\n", path.string().c_str());
+		}
+		std::fflush(stdout);
+		return false;
+	}
+	static uint32_t calls = 0;
+	if (++calls % 30 != 0) return false;
+	std::error_code error;
+	return std::filesystem::exists(trigger, error);
+}
+
+void GbufferDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const std::vector<DumpImage>& images) {
+	const std::filesystem::path trigger_path(std::getenv("KYTY_GBUFFER_DUMP"));
+	{
+		std::error_code error;
+		std::filesystem::rename(trigger_path, std::filesystem::path(trigger_path).concat(".done"), error);
+	}
+	vk::DeviceSize             total = 0;
+	std::vector<const DumpImage*> used;
+	g_gbuffer_dump.parts.clear();
+	for (const auto& item: images) {
+		const auto& source = item.image;
+		const uint32_t bytes = DumpFormatBytes(source.format);
+		if (source.image == nullptr || bytes == 0 || !(source.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
+		    source.layout == vk::ImageLayout::eUndefined) {
+			std::printf("G-buffer dump: %s skipped (format %d, usage 0x%x, layout %d)\n", item.name.c_str(),
+			            static_cast<int>(source.format), static_cast<unsigned>(static_cast<VkImageUsageFlags>(source.usage)),
+			            static_cast<int>(source.layout));
+			continue;
+		}
+		const vk::DeviceSize size = static_cast<vk::DeviceSize>(source.extent.width) * source.extent.height * bytes;
+		g_gbuffer_dump.parts.push_back({item.name, total, size, source.extent.width, source.extent.height, static_cast<int>(source.format)});
+		used.push_back(&item);
+		total += (size + 255u) / 256u * 256u;
+	}
+	if (g_gbuffer_dump.buffer != VK_NULL_HANDLE) {
+		vmaDestroyBuffer(g_gbuffer_dump.allocator, g_gbuffer_dump.buffer, g_gbuffer_dump.allocation);
+	}
+	g_gbuffer_dump.buffer = VK_NULL_HANDLE;
+	VkBufferCreateInfo buffer_info {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+	buffer_info.size        = total;
+	buffer_info.usage       = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+	buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VmaAllocationCreateInfo allocation_info {};
+	allocation_info.flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+	allocation_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+	VmaAllocationInfo info {};
+	if (total == 0 || vmaCreateBuffer(graphics.allocator, &buffer_info, &allocation_info, &g_gbuffer_dump.buffer,
+	                                  &g_gbuffer_dump.allocation, &info) != VK_SUCCESS || info.pMappedData == nullptr) {
+		g_gbuffer_dump.buffer = VK_NULL_HANDLE;
+		std::printf("G-buffer dump: no readback buffer (%llu bytes)\n", static_cast<unsigned long long>(total));
+		std::fflush(stdout);
+		return;
+	}
+	g_gbuffer_dump.allocator = graphics.allocator;
+	g_gbuffer_dump.mapped    = info.pMappedData;
+	for (size_t i = 0; i < used.size(); i++) {
+		const auto& item   = *used[i];
+		const auto& source = item.image;
+		const auto& part   = g_gbuffer_dump.parts[i];
+		const auto  aspect = item.depth ? vk::ImageAspectFlagBits::eDepth : vk::ImageAspectFlagBits::eColor;
+		// (a depth-stencil image's barrier names both aspects; only the depth is copied)
+		const auto barrier_aspect = source.format == vk::Format::eD32SfloatS8Uint
+		                                ? (vk::ImageAspectFlagBits::eDepth | vk::ImageAspectFlagBits::eStencil)
+		                                : vk::ImageAspectFlags(aspect);
+		DumpLayout(command, source.image, barrier_aspect, source.layout, vk::ImageLayout::eTransferSrcOptimal);
+		vk::BufferImageCopy region {};
+		region.bufferOffset     = part.offset;
+		region.imageSubresource = vk::ImageSubresourceLayers {aspect, 0, 0, 1};
+		region.imageExtent      = vk::Extent3D {source.extent.width, source.extent.height, 1};
+		command.copyImageToBuffer(source.image, vk::ImageLayout::eTransferSrcOptimal, vk::Buffer(g_gbuffer_dump.buffer), 1, &region,
+		                          Direct());
+		DumpLayout(command, source.image, barrier_aspect, vk::ImageLayout::eTransferSrcOptimal, source.layout);
+	}
+	g_gbuffer_dump.folder  = trigger_path.parent_path().string();
+	g_gbuffer_dump.wait    = 0;
+	g_gbuffer_dump.pending = true;
+	std::printf("G-buffer dump: %zu image(s) recorded\n", g_gbuffer_dump.parts.size());
+	std::fflush(stdout);
 }
 
 int FlipRateFloor() {

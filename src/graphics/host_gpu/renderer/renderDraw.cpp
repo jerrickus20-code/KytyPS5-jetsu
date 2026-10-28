@@ -4020,6 +4020,37 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			ProfileDiscover::OnPixel(state.ps_input_info.stage.program->shader_hash, target.width, target.height, found);
 		}
 	}
+	// KYTY_GBUFFER_DUMP (local/frame-gen.h): remember the latest draw into five full-size color targets (the G-buffer) ...
+	if (FrameGen::GbufferDumpEnabled() && !mesh_active && state.color_count >= 4 && state.depth_info.image_id) {
+		auto&       texture_cache = m_context.GetTextureCache();
+		const auto& depth         = texture_cache.GetImage(state.depth_info.image_id);
+		if (depth.backing.extent.width >= 1280 && state.color_info[0].image_id &&
+		    texture_cache.GetImage(state.color_info[0].image_id).backing.extent == depth.backing.extent) {
+			m_gbuffer_dump_depth = state.depth_info.image_id;
+			m_gbuffer_dump_colors.clear();
+			for (uint32_t i = 0; i < state.color_count && i < 8; ++i) m_gbuffer_dump_colors.push_back(state.color_info[i].image_id);
+		}
+	}
+	// ... and at the profile's composite draw copy them out.
+	if (FrameGen::GbufferDumpEnabled() && !m_gbuffer_dump_colors.empty() && bindings.pixel && state.ps_active &&
+	    state.ps_input_info.stage.program != nullptr && ::GameProfile::Current().composite_shader != 0 &&
+	    state.ps_input_info.stage.program->shader_hash == ::GameProfile::Current().composite_shader && FrameGen::GbufferDumpWanted()) {
+		buffer.EndRendering();
+		const auto                     native        = buffer.Handle();
+		auto&                          texture_cache = m_context.GetTextureCache();
+		std::vector<FrameGen::DumpImage> images;
+		auto add = [&](const std::string& name, ImageId id, bool is_depth) {
+			if (!id) return;
+			const auto& image = texture_cache.GetImage(id);
+			images.push_back({name,
+			                  {image.backing.image, nullptr, image.backing.format, {image.backing.extent.width, image.backing.extent.height},
+			                   image.backing.state.layout, image.backing.usage},
+			                  is_depth});
+		};
+		for (size_t i = 0; i < m_gbuffer_dump_colors.size(); ++i) add("c" + std::to_string(i), m_gbuffer_dump_colors[i], false);
+		add("depth", m_gbuffer_dump_depth, true);
+		FrameGen::GbufferDumpRecord(m_context.GetGraphics(), native, images);
+	}
 	// Late DLSS of a game without a TAA pass (profile direct_motion_target): the G-buffer draw's depth and motion vectors.
 	if (FrameGen::DirectCapture() && !mesh_active) {
 		const int motion_index = ::GameProfile::Current().direct_motion_target;

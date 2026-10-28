@@ -1,0 +1,7 @@
+# ASTRO BOT (PPSA21567, 01.019.000), work in progress. Found so far (KYTY_PROFILE_TIMELINE): the game renders 2432x1368 (dynamic
+# resolution) into a deferred G-buffer of five colour targets (formats 43, 37, 97, 122, 97) and depth, and the final
+# composite writes a 3840x2160 target, sampling the 2432x1368 HDR scene in slot 0 and an interface image in slot 1.
+title = PPSA21567
+version = 01.019.000
+composite_shader = 0x2c3545445213721e
+composite_scene_slot = 0
