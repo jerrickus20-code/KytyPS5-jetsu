@@ -4,8 +4,11 @@
 #include "loader/runtimeLinker.h"
 #include "loader/systemContent.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -34,9 +37,59 @@ constexpr uint64_t kBotFps       = 0x8ff0040;
 constexpr uint64_t kBotFrameTime = 0x8ff0048;
 constexpr uint64_t kBotPeriodUs  = 0x8ff0050;
 
+// Dynamic game speed: below the capped rate the engine's frame time (the game's simulation step) follows the real frame
+// interval, so a frame rate under 30 fps no longer shows as slow motion. The rate and period (what the game's own limiter
+// uses) stay at the cap. KYTY_ASTRO_DYNAMIC_DT=0 turns it off; KYTY_ASTRO_DT_FLOOR=<fps> (default 12) is the lowest rate
+// followed (below it the game slows down again, which also keeps the physics step bounded).
+bool DynamicEnabled() {
+	static const bool enabled = [] {
+		const char* value = std::getenv("KYTY_ASTRO_DYNAMIC_DT");
+		return value == nullptr || std::strcmp(value, "0") != 0;
+	}();
+	return enabled;
+}
+double DynamicFloorFps() {
+	static const double fps = [] {
+		const char* value = std::getenv("KYTY_ASTRO_DT_FLOOR");
+		const double parsed = value != nullptr ? std::atof(value) : 0.0;
+		return parsed >= 5.0 && parsed <= 60.0 ? parsed : 12.0;
+	}();
+	return fps;
+}
+
 std::atomic<uint64_t> g_base {0};
 uint64_t              g_off_fps = kFps, g_off_frame_time = kFrameTime, g_off_period = kPeriodUs;
 bool                  g_check_invariant = false;
+
+// Called once per guest frame (through Apply). Estimates the real frame interval (smoothed) and writes it as the engine's
+// frame time when it is longer than the capped rate's.
+void FollowFrameInterval(uint64_t base, int fps) {
+	using Clock = std::chrono::steady_clock;
+	static Clock::time_point last {};
+	static double            smooth = 0.0; // seconds
+	static bool              told   = false;
+	const auto               now    = Clock::now();
+	const double             target = 1.0 / static_cast<double>(fps);
+	const double             limit  = 1.0 / DynamicFloorFps();
+	if (last.time_since_epoch().count() != 0) {
+		const double interval = std::min(std::chrono::duration<double>(now - last).count(), limit);
+		smooth                = smooth == 0.0 ? interval : smooth + 0.2 * (interval - smooth);
+	}
+	last = now;
+	if (smooth == 0.0) return;
+	// Within 4% of the target (or faster) = the normal step; no jitter on a steady cap.
+	double dt = smooth < target * 1.04 ? target : std::min(smooth, limit);
+	dt        = std::round(dt * 2000.0) / 2000.0; // 0.5 ms steps
+	auto* frame_time = reinterpret_cast<volatile float*>(base + g_off_frame_time);
+	const float value = static_cast<float>(std::max(dt, target));
+	if (*frame_time != value) *frame_time = value;
+	if (!told && value > static_cast<float>(target) * 1.1f) {
+		told = true;
+		Log::WriteToConsoleAndLog(fmt::format("Astro frame rate: the game is slower than {} fps; its time step now follows the frame "
+		                                      "time ({:.1f} ms, floor {:.0f} fps; KYTY_ASTRO_DYNAMIC_DT=0 turns this off)\n",
+		                                      fps, static_cast<double>(value) * 1000.0, DynamicFloorFps()));
+	}
+}
 
 } // namespace
 
@@ -82,6 +135,7 @@ void Apply(int fps) {
 	auto* rate = reinterpret_cast<volatile double*>(base + g_off_fps);
 	if (*rate == static_cast<double>(fps)) {
 		// ASTRO BOT: another copy of the rate may be rewritten by the game; keep the three values together.
+		if (g_check_invariant && DynamicEnabled()) FollowFrameInterval(base, fps);
 		return;
 	}
 	if (g_check_invariant) {
