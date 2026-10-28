@@ -7,6 +7,7 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/render.h"
 #include "common/emulatorConfig.h"
+#include "loader/astroFrameRate.h"
 
 #include <algorithm>
 #include <atomic>
@@ -2342,6 +2343,8 @@ void PrepareInputs(GraphicContext& graphics, TextureCache& cache, CommandBuffer&
 	g_camera.valid     = false;
 	++g_guest_frame;
 	GuestScanPoll();
+	// Astro's Playroom: the engine's frame rate follows the F4 30 fps cap, so the game keeps its normal speed.
+	if (Loader::AstroFrameRate::Installed()) Loader::AstroFrameRate::Apply(60 / (FlipRateFloor() + 1));
 	if (!ready) {
 		return;
 	}
