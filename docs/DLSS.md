@@ -74,8 +74,9 @@ log can be compared per setting.
 
 ## Launcher window
 
-`run-gui.cmd` (double-click) opens a window to choose the game and its profile instead of typing arguments. Add games with
-"Add folder..." (the folder with `eboot.bin`) or "Add .zar..."; the title id is read from `sce_sys\param.sfo` (or the path) and picks
+`run-gui.cmd` (double-click) opens a window to choose the game and its profile instead of typing arguments. Games are
+found by themselves in the folder next to the emulator's (for example `C:\PS5`, two levels deep: a folder with `eboot.bin`, or
+each `.zar` archive); "Scan folder..." searches another folder, "Add folder..." / "Add .zar..." add one, and Remove hides one for good. The title id is read from `sce_sys\param.sfo` (or the path) and picks
 the profile: ASTRO BOT (late DLSS 1080p to 1440p, preset K), Astro's Playroom (720p to 1440p, preset M), Demon's Souls, frame
 generation only, or the plain emulator. Late DLSS size, DLSS preset, frame generation, windowed, the patch file (a file
 `patches\<title id>.json` next to the scripts is picked up by itself), the Streamline folder, extra `KYTY_*` settings and emulator

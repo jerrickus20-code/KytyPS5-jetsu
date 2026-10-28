@@ -82,7 +82,30 @@ function Get-TitleId([string]$path) {
 	} catch { }
 	$match = [regex]::Match($path, '(PPSA|CUSA)\d{5}')
 	if ($match.Success) { return $match.Value }
+	# An archive has no readable param.sfo: a few names are recognised, anything else can be typed into the Title id box.
+	if ($path -match 'ASTRO_?PLAY|PLAYROOM') { return 'PPSA01325' }
 	return ''
+}
+
+# Games in a folder: a folder with eboot.bin, or each .zar archive, in the folder and its sub-folders (two levels).
+function Find-Games([string]$rootDir) {
+	$found = New-Object System.Collections.ArrayList
+	if (!$rootDir -or !(Test-Path -LiteralPath $rootDir -PathType Container)) { return @() }
+	$dirs = New-Object System.Collections.ArrayList
+	[void]$dirs.Add($rootDir)
+	foreach ($first in @(Get-ChildItem -LiteralPath $rootDir -Directory -ErrorAction SilentlyContinue)) {
+		if ($first.Name -match '^(KytyPS5|_|jetsu-dev|vram)') { continue }
+		[void]$dirs.Add($first.FullName)
+		foreach ($second in @(Get-ChildItem -LiteralPath $first.FullName -Directory -ErrorAction SilentlyContinue)) {
+			if ($second.Name -notmatch '^(_|sce_sys|\.)') { [void]$dirs.Add($second.FullName) }
+		}
+	}
+	foreach ($dir in $dirs) {
+		if (Test-Path -LiteralPath (Join-Path $dir 'kyty_emulator.exe')) { continue }
+		if (Test-Path -LiteralPath (Join-Path $dir 'eboot.bin')) { [void]$found.Add($dir); continue }
+		foreach ($zar in @(Get-ChildItem -LiteralPath $dir -Filter '*.zar' -File -ErrorAction SilentlyContinue)) { [void]$found.Add($zar.FullName) }
+	}
+	return @($found)
 }
 
 function Get-GameLabel($g) {
@@ -116,6 +139,7 @@ function Apply-Profile($g, [string]$key) {
 $script:games = New-Object System.Collections.ArrayList
 $script:streamline = ''
 $script:lastGame = ''
+$script:ignored = New-Object System.Collections.ArrayList
 function Load-Config {
 	$legacy = Join-Path $script:state 'streamline.txt'
 	if (Test-Path -LiteralPath $legacy) { $script:streamline = (Get-Content -LiteralPath $legacy -Raw).Trim() }
@@ -131,6 +155,7 @@ function Load-Config {
 		$json = Get-Content -LiteralPath $script:configFile -Raw | ConvertFrom-Json
 		if ($json.streamline) { $script:streamline = [string]$json.streamline }
 		if ($json.lastGame) { $script:lastGame = [string]$json.lastGame }
+		foreach ($path in @($json.ignored)) { if ($path) { [void]$script:ignored.Add([string]$path) } }
 		foreach ($item in @($json.games)) {
 			if (!$item.path) { continue }
 			$g = New-Game ([string]$item.path)
@@ -153,7 +178,7 @@ function Load-Config {
 }
 function Save-Config {
 	try {
-		$config = [ordered]@{ streamline = $script:streamline; lastGame = $script:lastGame; games = @($script:games | ForEach-Object { $_ }) }
+		$config = [ordered]@{ streamline = $script:streamline; lastGame = $script:lastGame; ignored = @($script:ignored); games = @($script:games | ForEach-Object { $_ }) }
 		$config | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:configFile -Encoding UTF8
 	} catch { }
 }
@@ -209,11 +234,12 @@ function Add-Button([string]$text, [int]$x, [int]$y, [int]$w, [int]$h = 26) {
 [void](Add-Label 'Game' 16 14 80)
 $gameBox = Add-Control (New-Object System.Windows.Forms.ComboBox) 100 14 574 24
 $gameBox.DropDownStyle = 'DropDownList'
-$addFolder = Add-Button 'Add folder...' 100 46 110
-$addZar = Add-Button 'Add .zar...' 216 46 110
-$removeGame = Add-Button 'Remove' 332 46 80
-$titleLabel = Add-Label 'Title id' 440 46 56
-$titleBox = Add-Control (New-Object System.Windows.Forms.TextBox) 500 47 100 24
+$addFolder = Add-Button 'Add folder...' 100 46 100
+$addZar = Add-Button 'Add .zar...' 206 46 90
+$scanGames = Add-Button 'Scan folder...' 302 46 100
+$removeGame = Add-Button 'Remove' 408 46 70
+$titleLabel = Add-Label 'Title id' 496 46 56
+$titleBox = Add-Control (New-Object System.Windows.Forms.TextBox) 556 47 118 24
 
 [void](Add-Label 'Profile' 16 90 80)
 $profileBox = Add-Control (New-Object System.Windows.Forms.ComboBox) 100 90 574 24
@@ -364,6 +390,7 @@ function Add-GameFromPath([string]$path) {
 		return
 	}
 	foreach ($g in $script:games) { if ($g.path -eq $resolved) { Refill-Games $resolved; return } }
+	$script:ignored.Remove($resolved)
 	[void]$script:games.Add((New-Game $resolved))
 	$script:lastGame = $resolved
 	Refill-Games $resolved
@@ -393,6 +420,32 @@ $addFolder.Add_Click({
 	$dialog.Description = 'Choose the game folder (the one with eboot.bin and sce_sys), or a folder with one .zar archive'
 	if ($dialog.ShowDialog() -eq 'OK') { Add-GameFromPath $dialog.SelectedPath }
 })
+# Adds the games found in a folder that are not in the list (and were not removed by hand); returns how many.
+function Scan-Folder([string]$rootDir) {
+	$added = 0
+	foreach ($path in (Find-Games $rootDir)) {
+		$known = $false
+		foreach ($g in $script:games) { if ($g.path -eq $path) { $known = $true } }
+		if ($known -or ($script:ignored -contains $path)) { continue }
+		[void]$script:games.Add((New-Game $path))
+		$added++
+	}
+	return $added
+}
+$scanGames.Add_Click({
+	$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+	$dialog.Description = 'Choose the folder that holds your games (each in its own folder, or as .zar files); its sub-folders are searched too'
+	$dialog.SelectedPath = Split-Path -Parent $script:root
+	if ($dialog.ShowDialog() -ne 'OK') { return }
+	$status.Text = 'Searching...'
+	$form.Refresh()
+	foreach ($path in (Find-Games $dialog.SelectedPath)) { $script:ignored.Remove($path) }
+	$count = Scan-Folder $dialog.SelectedPath
+	$current = Current-Game
+	Refill-Games $(if ($null -ne $current) { $current.path } else { '' })
+	Save-Config
+	$status.Text = "$count game(s) added from $($dialog.SelectedPath)."
+})
 $addZar.Add_Click({
 	$dialog = New-Object System.Windows.Forms.OpenFileDialog
 	$dialog.Filter = 'Game archive (*.zar)|*.zar|eboot.bin|eboot.bin|All files (*.*)|*.*'
@@ -402,6 +455,7 @@ $removeGame.Add_Click({
 	$g = Current-Game
 	if ($null -eq $g) { return }
 	$script:games.Remove($g)
+	if ($script:ignored -notcontains $g.path) { [void]$script:ignored.Add($g.path) }
 	Refill-Games ''
 	Save-Config
 })
@@ -487,12 +541,18 @@ $form.Add_FormClosing({
 
 if ($ParseOnly) { return }
 Load-Config
+$scanned = 0
+try { $scanned = Scan-Folder (Split-Path -Parent $script:root) } catch { }
+if ($scanned -gt 0) { Save-Config }
 Refill-Games $script:lastGame
-if ($script:games.Count -eq 0) { $status.Text = "Add a game with 'Add folder...' or 'Add .zar...'." }
+if ($scanned -gt 0) { $status.Text = "$scanned game(s) found next to the emulator's folder and added." }
+if ($script:games.Count -eq 0) { $status.Text = "Add a game with 'Add folder...', 'Add .zar...' or 'Scan folder...'." }
 # -AutoClose <seconds>: closes the window by itself (a test); _dlss\launcher-selftest.txt says it was shown.
 $form.Add_Shown({
 	if ($AutoClose -gt 0) {
-		Set-Content -LiteralPath (Join-Path $script:state 'launcher-selftest.txt') -Value ("shown $(Get-Date -Format 'HH:mm:ss'); games: $($script:games.Count)`r`n$($gameBox.Text)`r`nprofile: $($profileBox.Text)`r`n$($preview.Text)")
+		$lines = @("shown $(Get-Date -Format 'HH:mm:ss'); games: $($script:games.Count)", $gameBox.Text, "profile: $($profileBox.Text)", $preview.Text)
+		foreach ($g in $script:games) { $lines += ('game: ' + $g.title + ' ' + $g.profile + ' patch=' + $g.patch + ' ' + $g.path) }
+		Set-Content -LiteralPath (Join-Path $script:state 'launcher-selftest.txt') -Value ($lines -join "`r`n")
 		$closer = New-Object System.Windows.Forms.Timer
 		$closer.Interval = $AutoClose * 1000
 		$closer.Add_Tick({ $form.Close() })
