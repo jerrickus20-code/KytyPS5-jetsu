@@ -4059,7 +4059,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			auto&       texture_cache = m_context.GetTextureCache();
 			const auto& motion        = texture_cache.GetImage(state.color_info[motion_index].image_id);
 			const auto& depth         = texture_cache.GetImage(state.depth_info.image_id);
-			if (motion.backing.format == vk::Format::eR16G16Sfloat && motion.backing.extent == depth.backing.extent) {
+			// (the motion vectors in the first two channels of an RG16F or an RGBA16F target)
+			if ((motion.backing.format == vk::Format::eR16G16Sfloat || motion.backing.format == vk::Format::eR16G16B16A16Sfloat) &&
+			    motion.backing.extent == depth.backing.extent) {
 				FrameGen::OnDirectGbuffer(state.depth_info.image_id, depth.info.data.address, state.color_info[motion_index].image_id,
 				                          motion.info.data.address, {motion.backing.extent.width, motion.backing.extent.height});
 				if (const auto* resources = state.vertex_info[0].stage ? state.vertex_info[0].stage.resources : nullptr; resources != nullptr) {
