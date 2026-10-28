@@ -3929,7 +3929,8 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 	if (g_late_input != scene.extent) {
 		const float share = static_cast<float>(scene.extent.height) / static_cast<float>(height);
 		sl::DLSSOptions options {};
-		options.mode = share >= 0.95f   ? sl::DLSSMode::eDLAA
+		// (DLAA only for a render size equal to the output: 2432x1368 into 2560x1440 is a super resolution case)
+		options.mode = (scene.extent.width == width && scene.extent.height == height) ? sl::DLSSMode::eDLAA
 		               : share >= 0.62f ? sl::DLSSMode::eMaxQuality
 		               : share >= 0.55f ? sl::DLSSMode::eBalanced
 		               : share >= 0.45f ? sl::DLSSMode::eMaxPerformance
