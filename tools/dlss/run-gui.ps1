@@ -11,6 +11,13 @@
 # named patches\<title id>.json next to this script is picked up by itself.
 param([switch]$ParseOnly)
 $ErrorActionPreference = 'Stop'
+# Any error is written to _dlss\launcher-crash.txt and shown in a message box (the window is started hidden).
+trap {
+	$crash = ($_ | Out-String) + "`r`n" + $_.ScriptStackTrace
+	try { New-Item -ItemType Directory -Force (Join-Path $PSScriptRoot '_dlss') | Out-Null; Set-Content -LiteralPath (Join-Path $PSScriptRoot '_dlss\launcher-crash.txt') -Value $crash } catch { }
+	try { Add-Type -AssemblyName System.Windows.Forms; [void][System.Windows.Forms.MessageBox]::Show($crash, 'KytyPS5 launcher: error') } catch { }
+	break
+}
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
