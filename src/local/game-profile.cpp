@@ -134,6 +134,14 @@ bool Parse(std::string_view text, Profile* profile, std::string* error) {
 			uint32_t target = 0;
 			if (!u32(&target) || target > 7) return fail("direct_motion_target: 0..7 expected");
 			profile->direct_motion_target = static_cast<int>(target);
+		} else if (key == "direct_jitter_buffer" || key == "direct_jitter_offset") {
+			uint32_t index = 0;
+			if (!u32(&index) || index > 4095) return fail("direct_jitter_buffer / direct_jitter_offset: number expected");
+			(key == "direct_jitter_buffer" ? profile->direct_jitter_buffer : profile->direct_jitter_offset) = static_cast<int>(index);
+		} else if (key == "no_frame_cap") {
+			uint32_t on = 0;
+			if (!u32(&on)) return fail("no_frame_cap: 0 or 1 expected");
+			profile->no_frame_cap = on != 0;
 		} else if (key == "render_aspect") {
 			const auto colon = value.find(':');
 			uint64_t   w = 0, h = 0;

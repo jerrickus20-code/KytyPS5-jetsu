@@ -4034,6 +4034,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				if (const auto* resources = state.vertex_info[0].stage ? state.vertex_info[0].stage.resources : nullptr; resources != nullptr) {
 					std::vector<std::array<uint32_t, 4>> words;
 					for (const auto& buffer: resources->buffers) words.push_back({buffer.dwords[0], buffer.dwords[1], buffer.dwords[2], buffer.dwords[3]});
+					FrameGen::OnDirectJitter(words);
 					FrameGen::OnDirectGbufferBuffers(state.vertex_info[0].stage.program->shader_hash, words, resources->flattened_srt);
 				}
 			}

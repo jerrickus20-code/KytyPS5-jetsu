@@ -2168,6 +2168,10 @@ void JitterFor(uint32_t phase, float& x, float& y) {
 	y = (Halton(index, 3) - 0.5f) * scale;
 }
 
+// The game's own projection jitter (NDC), read at its first G-buffer draw of the frame (profile direct_jitter_*).
+float    g_direct_jitter_ndc[2] {0.0f, 0.0f};
+uint64_t g_direct_jitter_frame = UINT64_MAX;
+bool     g_direct_jitter_valid = false;
 std::atomic<bool> g_direct_fg {false};    // the same, for the frame's DLSS-G inputs (PrepareInputs takes it)
 std::atomic<bool> g_direct_valid {false}; // this guest frame's G-buffer draw gave late DLSS its images (OnDirectGbuffer)
 
@@ -2192,6 +2196,35 @@ void OnDirectGbuffer(ImageId depth, uint64_t depth_address, ImageId motion, uint
 	(void)motion;
 	(void)motion_address;
 	(void)extent;
+#endif
+}
+
+// The profile's jitter of a game without a TAA pass: two floats of the G-buffer vertex shader's constant buffer.
+void OnDirectJitter(const std::vector<std::array<uint32_t, 4>>& buffers) {
+#ifdef KYTY_FRAMEGEN_STREAMLINE
+	const auto& profile = ::GameProfile::Current();
+	if (profile.direct_jitter_buffer < 0 || profile.direct_jitter_offset < 0 || g_guest_frame == g_direct_jitter_frame) return;
+	g_direct_jitter_frame = g_guest_frame;
+	g_direct_jitter_valid = false;
+	if (static_cast<size_t>(profile.direct_jitter_buffer) >= buffers.size()) return;
+	const auto&    v      = buffers[static_cast<size_t>(profile.direct_jitter_buffer)];
+	const uint64_t base   = (v[0] | (static_cast<uint64_t>(v[1]) << 32u)) & 0xFFFFFFFFFFFFull;
+	const uint32_t stride = (v[1] >> 16u) & 0x3FFFu;
+	const uint64_t size   = stride == 0 ? v[2] : static_cast<uint64_t>(stride) * v[2];
+	const uint64_t offset = static_cast<uint64_t>(profile.direct_jitter_offset) * 4u;
+	float          values[2] {};
+	SIZE_T         read = 0;
+	if (base == 0 || offset + 8u > size ||
+	    !ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(base + offset), values, sizeof(values), &read) ||
+	    read != sizeof(values) || !std::isfinite(values[0]) || !std::isfinite(values[1]) || std::fabs(values[0]) > 0.05f ||
+	    std::fabs(values[1]) > 0.05f) {
+		return;
+	}
+	g_direct_jitter_ndc[0] = values[0];
+	g_direct_jitter_ndc[1] = values[1];
+	g_direct_jitter_valid  = true;
+#else
+	(void)buffers;
 #endif
 }
 
@@ -3809,6 +3842,24 @@ vk::ImageView EvaluateLateDlss(GraphicContext& graphics, vk::CommandBuffer comma
 			}();
 			constants.jitterOffset = sl::float2(jx * sign, jy * sign);
 			g_jitter_phase.fetch_add(1, std::memory_order_relaxed); // (the next frame's draws take the next offset)
+		} else if (g_direct_jitter_valid && g_direct_jitter_frame == g_guest_frame) {
+			// The game's own jitter (profile direct_jitter_*): its projection's NDC offset in pixels (right, down), and its
+			// motion vectors include it. KYTY_DIRECT_JITTER_SIGN_X / _Y=-1 flip a direction (a check against the dump).
+			static const float sign_x = [] {
+				const char* value = std::getenv("KYTY_DIRECT_JITTER_SIGN_X");
+				return value != nullptr && std::atof(value) < 0 ? -1.0f : 1.0f;
+			}();
+			static const float sign_y = [] {
+				const char* value = std::getenv("KYTY_DIRECT_JITTER_SIGN_Y");
+				return value != nullptr && std::atof(value) < 0 ? -1.0f : 1.0f;
+			}();
+			constants.jitterOffset = sl::float2(sign_x * g_direct_jitter_ndc[0] * 0.5f * static_cast<float>(scene.extent.width),
+			                                    sign_y * g_direct_jitter_ndc[1] * 0.5f * static_cast<float>(scene.extent.height));
+			static const bool mv_jittered = [] {
+				const char* value = std::getenv("KYTY_DIRECT_MV_JITTERED");
+				return value == nullptr || value[0] != '0';
+			}();
+			constants.motionVectorsJittered = mv_jittered ? sl::Boolean::eTrue : sl::Boolean::eFalse;
 		}
 	}
 	(void)g_api.set_constants(constants, *token, viewport);
@@ -4303,6 +4354,11 @@ void Toggle(Switch which) {
 			break;
 		}
 		case Switch::Cap:
+			if (::GameProfile::Current().no_frame_cap) {
+				g_flip_floor = 0;
+				note = "30 fps cap not available: this game runs at the speed of its frame rate  [F4]";
+				break;
+			}
 			g_flip_floor = g_flip_floor.load() > 0 ? 0 : g_flip_floor_on;
 			note = g_flip_floor.load() > 0
 			           ? (Enabled() ? "30 fps cap on: 60 with frame generation  [F4]" : "30 fps cap on  [F4]")
@@ -4319,6 +4375,7 @@ void Toggle(Switch which) {
 
 int FlipRateFloor() {
 	LoadToggles();
+	if (::GameProfile::Current().no_frame_cap) return 0; // (a game whose speed follows its frame rate)
 	return g_flip_floor.load(std::memory_order_relaxed);
 }
 

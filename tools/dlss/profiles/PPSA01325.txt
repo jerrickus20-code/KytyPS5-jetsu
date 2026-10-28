@@ -14,3 +14,9 @@ version = 01.905.000
 composite_shader = 0x67008a703cf06422
 composite_scene_slot = 0
 direct_motion_target = 4
+# The game's jitter: its G-buffer vertex shader's per-view constants (V# 1, 496 bytes) hold the projection, whose z row's x
+# and y (floats 40 and 41) are the NDC jitter (Halton 2,3); the previous view-projection follows at float 80.
+direct_jitter_buffer = 1
+direct_jitter_offset = 40
+# The game advances one step per frame: a 30 fps cap halves its speed.
+no_frame_cap = 1
