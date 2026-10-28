@@ -1896,8 +1896,10 @@ void BeforePresent(const FrameInputs* inputs, vk::Extent2D backbuffer, vk::Rect2
 		Mat4 projection;
 		projection[0] = sl::float4(camera.sx, 0, 0, 0);
 		projection[1] = sl::float4(0, camera.sy, 0, 0);
-		projection[2] = sl::float4(camera.cx, camera.cy, 0, 1);
-		projection[3] = sl::float4(0, 0, camera.z_near, 0);
+		// (A standard-Z projection with a far plane, when the profile gave one: clip z = z_a * z + z_b.)
+		const bool standard_z = inputs->camera.z_a != 0.0f;
+		projection[2] = sl::float4(camera.cx, camera.cy, standard_z ? inputs->camera.z_a : 0.0f, 1);
+		projection[3] = sl::float4(0, 0, standard_z ? inputs->camera.z_b : camera.z_near, 0);
 		constants.cameraViewToClip = projection;
 		Inverted(projection, constants.clipToCameraView);
 		const auto current  = Transposed(inputs->camera.view_proj);
@@ -1932,6 +1934,10 @@ void BeforePresent(const FrameInputs* inputs, vk::Extent2D backbuffer, vk::Rect2
 		constants.cameraFar   = 100000.0f;
 		constants.cameraFOV   = 2.0f * std::atan(1.0f / std::fabs(camera.sy));
 		constants.cameraAspectRatio = std::fabs(camera.sy / camera.sx);
+		if (standard_z) {
+			constants.cameraNear = -inputs->camera.z_b / inputs->camera.z_a;
+			constants.cameraFar  = inputs->camera.z_a > 1.0f ? inputs->camera.z_b / (1.0f - inputs->camera.z_a) : 100000.0f;
+		}
 		if (inputs->direct) {
 			const auto direct = DirectConstants(width, height, false);
 			constants.mvecScale     = direct.mvecScale;
@@ -2185,6 +2191,10 @@ void JitterFor(uint32_t phase, float& x, float& y) {
 float    g_direct_jitter_ndc[2] {0.0f, 0.0f};
 uint64_t g_direct_jitter_frame = UINT64_MAX;
 bool     g_direct_jitter_valid = false;
+// The real camera of a game read through the profile's direct_camera_*: the current and previous view-projection (as
+// Camera's: a row per clip component), and the standard-Z terms; of the guest frame g_direct_camera_frame.
+Camera   g_direct_camera;
+uint64_t g_direct_camera_frame = UINT64_MAX;
 std::atomic<bool> g_direct_fg {false};    // the same, for the frame's DLSS-G inputs (PrepareInputs takes it)
 std::atomic<bool> g_direct_valid {false}; // this guest frame's G-buffer draw gave late DLSS its images (OnDirectGbuffer)
 
@@ -2216,6 +2226,45 @@ void OnDirectGbuffer(ImageId depth, uint64_t depth_address, ImageId motion, uint
 void OnDirectJitter(const std::vector<std::array<uint32_t, 4>>& buffers) {
 #ifdef KYTY_FRAMEGEN_STREAMLINE
 	const auto& profile = ::GameProfile::Current();
+	if (profile.direct_camera_size != 0 && g_guest_frame != g_direct_camera_frame) {
+		// The per-view constant buffer of the right size: both view-projections read, checked, and kept for the frame.
+		const uint32_t need = std::max(profile.direct_camera_offset, profile.direct_camera_prev_offset) + 16u;
+		for (const auto& v : buffers) {
+			const uint64_t base   = (v[0] | (static_cast<uint64_t>(v[1]) << 32u)) & 0xFFFFFFFFFFFFull;
+			const uint32_t stride = (v[1] >> 16u) & 0x3FFFu;
+			const uint64_t size   = stride == 0 ? v[2] : static_cast<uint64_t>(stride) * v[2];
+			if (base == 0 || size != profile.direct_camera_size || size < need * 4u) continue;
+			std::vector<float> data(static_cast<size_t>(size / 4u));
+			SIZE_T             read = 0;
+			if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<const void*>(base), data.data(), data.size() * 4u, &read) ||
+			    read != data.size() * 4u)
+				continue;
+			Camera camera;
+			bool   finite = true;
+			for (uint32_t i = 0; i < 4; ++i) {
+				for (uint32_t j = 0; j < 4; ++j) {
+					const float now = data[profile.direct_camera_offset + j * 4 + i], before = data[profile.direct_camera_prev_offset + j * 4 + i];
+					finite          = finite && std::isfinite(now) && std::isfinite(before);
+					camera.view_proj[i * 4 + j]      = now; // (transposed: a row per clip component)
+					camera.prev_view_proj[i * 4 + j] = before;
+				}
+			}
+			if (!finite) continue;
+			// Clip w's row is the view direction (unit); clip z = A * w + B (standard Z).
+			const auto& m   = camera.view_proj;
+			const double wl = std::sqrt(double(m[12]) * m[12] + double(m[13]) * m[13] + double(m[14]) * m[14]);
+			if (std::fabs(wl - 1.0) > 0.02) continue;
+			const double a = (double(m[8]) * m[12] + double(m[9]) * m[13] + double(m[10]) * m[14]) / (wl * wl);
+			const double b = double(m[11]) - a * double(m[15]);
+			if (!(a > 0.5) || !(b < 0.0)) continue;
+			camera.z_a   = static_cast<float>(a);
+			camera.z_b   = static_cast<float>(b);
+			camera.valid = true;
+			g_direct_camera       = camera;
+			g_direct_camera_frame = g_guest_frame;
+			break;
+		}
+	}
 	if (profile.direct_jitter_buffer < 0 || profile.direct_jitter_offset < 0 || g_guest_frame == g_direct_jitter_frame) return;
 	g_direct_jitter_frame = g_guest_frame;
 	g_direct_jitter_valid = false;
@@ -2349,6 +2398,14 @@ void PrepareInputs(GraphicContext& graphics, TextureCache& cache, CommandBuffer&
 		camera.valid          = true;
 		ready                 = true;
 		inputs.direct         = true;
+		// The game's own camera when its profile says where it is (direct_camera_*): real motion of the view for DLSS-G.
+		static const bool real_camera = [] {
+			const char* value = std::getenv("KYTY_DIRECT_CAMERA");
+			return value == nullptr || value[0] != '0';
+		}();
+		if (real_camera && g_direct_camera.valid && g_direct_camera_frame != UINT64_MAX && g_guest_frame - g_direct_camera_frame <= 1) {
+			camera = g_direct_camera;
+		}
 	}
 	g_sources.valid    = false;
 	g_camera.valid     = false;

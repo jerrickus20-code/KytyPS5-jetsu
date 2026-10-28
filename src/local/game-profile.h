@@ -22,6 +22,9 @@
 //                                      # vectors; its depth target is the other input (late DLSS then needs no camera)
 //   direct_jitter_buffer     = 1      # ... and the G-buffer vertex shader's constant buffer (V# index) holding its projection,
 //   direct_jitter_offset     = 40     # whose jitter (2 floats, NDC: the projection's z-row x and y) is at this float index
+//   direct_camera_size       = 576    # frame generation's real camera for such a game: the size in bytes of the per-view constant
+//   direct_camera_offset     = 0      # buffer, the float index of the current view-projection (translation in the last row, a
+//   direct_camera_prev_offset = 80    # standard-Z projection with a far plane) and of the previous frame's
 //   no_frame_cap             = 1      # the game's speed follows its frame rate: the F4 30 fps cap is refused
 //   render_aspect            = 16:9                 # the render size's aspect (width a multiple of 8)
 //   patch_u32                = <pattern> | <offset> | width|height   # see RenderPatch
@@ -60,6 +63,9 @@ struct Profile {
 	uint32_t aspect_w = 16, aspect_h = 9;
 	int      direct_motion_target = -1; // see the file format above; -1: none
 	int      direct_jitter_buffer = -1, direct_jitter_offset = -1;
+	// direct_camera_size (bytes of the G-buffer vertex shader's per-view constant buffer, 0: none), the float index of the
+	// current view-projection in it (16 floats, a row per clip component's column: clip = [world 1] * M) and of the previous one.
+	uint32_t direct_camera_size = 0, direct_camera_offset = 0, direct_camera_prev_offset = 0;
 	bool     no_frame_cap         = false;
 	std::vector<RenderPatch> patches;
 	bool                     loaded = false; // a profile of this title was found

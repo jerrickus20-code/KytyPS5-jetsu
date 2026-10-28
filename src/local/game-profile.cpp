@@ -142,6 +142,12 @@ bool Parse(std::string_view text, Profile* profile, std::string* error) {
 			uint32_t index = 0;
 			if (!u32(&index) || index > 4095) return fail("direct_jitter_buffer / direct_jitter_offset: number expected");
 			(key == "direct_jitter_buffer" ? profile->direct_jitter_buffer : profile->direct_jitter_offset) = static_cast<int>(index);
+		} else if (key == "direct_camera_size" || key == "direct_camera_offset" || key == "direct_camera_prev_offset") {
+			uint32_t number = 0;
+			if (!u32(&number) || number > 65536) return fail("direct_camera_*: number expected");
+			(key == "direct_camera_size"     ? profile->direct_camera_size
+			 : key == "direct_camera_offset" ? profile->direct_camera_offset
+			                                 : profile->direct_camera_prev_offset) = number;
 		} else if (key == "no_frame_cap") {
 			uint32_t on = 0;
 			if (!u32(&on)) return fail("no_frame_cap: 0 or 1 expected");

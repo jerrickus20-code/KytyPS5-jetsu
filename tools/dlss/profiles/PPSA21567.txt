@@ -18,3 +18,9 @@ no_frame_cap = 0
 # 2432x1368 history) is replaced: late DLSS upscales its render-size input to 1440p and the final composite shows that.
 late_input_shader = 0x2936e5eca99d75e7
 late_input_slot = 1
+# Frame generation's real camera: the G-buffer vertex shaders' 576-byte per-view constant buffer holds the current
+# view-projection at float 0 and the previous frame's at float 80 (standard Z, near 0.1, far 1500; the same engine layout as
+# Astro's Playroom). KYTY_DIRECT_CAMERA=0 goes back to the fixed stand-in camera.
+direct_camera_size = 576
+direct_camera_offset = 0
+direct_camera_prev_offset = 80

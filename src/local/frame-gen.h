@@ -38,6 +38,9 @@ struct Camera {
 	std::array<float, 16> view_proj {};
 	std::array<float, 16> prev_view_proj {};
 	std::array<float, 2>  jitter_ndc {};
+	// A standard-Z projection with a far plane (a game read through a profile's direct_camera_*): clip z = z_a * view z + z_b
+	// (view z towards the front). 0: the reversed-Z projection with an infinite far plane of the other games.
+	float                 z_a = 0.0f, z_b = 0.0f;
 	bool                  valid = false;
 };
 
