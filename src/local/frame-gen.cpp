@@ -3623,6 +3623,31 @@ void GuestScanPoll() {
 	namespace fs = std::filesystem;
 	const fs::path dir(folder);
 	std::error_code error;
+	// dump.txt: "<hex address> <byte count>" per line -> dump-result.txt (hex words), to see the fields around a hit.
+	if (const fs::path dumpf = dir / "dump.txt"; fs::exists(dumpf, error)) {
+		std::ifstream in(dumpf);
+		std::ofstream out(dir / "dump-result.txt");
+		std::string   line;
+		while (std::getline(in, line)) {
+			unsigned long long address = 0, count = 0;
+			if (std::sscanf(line.c_str(), "%llx %llu", &address, &count) != 2) continue;
+			out << std::hex << address << std::dec << ":";
+			__try {
+				for (unsigned long long i = 0; i + 4 <= count && i < 4096; i += 4) {
+					if (i % 32 == 0) out << "\n  +" << std::hex << i << std::dec << ":";
+					char word[16];
+					std::snprintf(word, sizeof(word), " %08x", *reinterpret_cast<const uint32_t*>(address + i));
+					out << word;
+				}
+			} __except (EXCEPTION_EXECUTE_HANDLER) {
+				out << " FAULT";
+			}
+			out << "\n";
+		}
+		in.close();
+		out.close();
+		fs::rename(dumpf, fs::path(dumpf).concat(".done"), error);
+	}
 	if (const fs::path poke = dir / "poke.txt"; fs::exists(poke, error)) {
 		std::ifstream in(poke);
 		std::string   line, report;
