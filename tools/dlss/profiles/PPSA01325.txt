@@ -3,6 +3,10 @@
 # own projection by sub-pixel offsets and its motion vectors include that jitter (measured with KYTY_LATE_DUMP).
 # Render size: the "Fixed render resolution 1280x720" mod of the game patch JSON (-Patch); the output stays 3840x2160.
 #
+# Run it with tools\dlss\run-astro-latedlss.cmd -Game <folder> -Patch <PPSA01325.json> (the settings below).
+# The F4 30 fps cap keeps the game's speed: loader/astroFrameRate rewrites the engine's frame rate (30.0 fps, 33333 us, 1/30 s)
+# while the cap is on (version 01.905.000 only; the code is checked first).
+#
 # Measured run settings (late DLSS 720p -> 1440p):
 #   -LateDlss 1440 -FrameGen 1 -Set KYTY_LATE_DLSS_HDR=1,KYTY_DIRECT_MV=uv,KYTY_DIRECT_MV_SIGN=-1,
 #   KYTY_DIRECT_DEPTH_INVERTED=0,KYTY_LATE_JITTER=0,KYTY_SAMPLER_LOD_BIAS=-1,KYTY_DLSS_PRESET=M

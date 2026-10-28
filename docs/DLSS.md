@@ -41,6 +41,14 @@ DLSS frame generation, late DLSS and the render size need to know a few things a
 
 To make one, run the game with `run-dlss.cmd -Game <folder> -Discover`, play a minute in a 3D scene, quit, and send `_dlss\run.log`: its `PROFILE` lines show each compute shader's images, each vertex shader's first constants and the pixel shaders that draw into a much larger target than the pictures they sample. The file's format is in `profiles\README.txt`.
 
+### Astro's Playroom (PPSA01325, 01.905.000)
+
+`profiles/PPSA01325.txt` and `tools/dlss/run-astro-latedlss.cmd`: late DLSS 720p to 1440p (preset M), frame generation, and the
+F4 30 fps cap at the game's normal speed. The game is a deferred renderer without a TAA pass: late DLSS reads the G-buffer's
+depth and motion vectors directly (`direct_motion_target`) and the game's own sub-pixel jitter (`direct_jitter_buffer`,
+`direct_jitter_offset`). The render size comes from the "Fixed render resolution 1280x720" mod of the game's patch file. Its
+post-processing (bloom, depth of field, tonemap) still runs at 720p before the DLSS pass.
+
 ## Switches
 
 | Switch | What it does |
