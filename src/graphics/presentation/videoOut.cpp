@@ -1961,6 +1961,7 @@ KYTY_SYSV_ABI int VideoOutIsFlipPending(int handle) {
 
 KYTY_SYSV_ABI int VideoOutGetVblankStatus(int handle, VideoOutVblankStatus* status) {
 	PRINT_NAME();
+	LibKernel::TimeCensus("VblankStatus", __builtin_return_address(0));
 
 	if (status == nullptr) {
 		return VIDEO_OUT_ERROR_INVALID_ADDRESS;

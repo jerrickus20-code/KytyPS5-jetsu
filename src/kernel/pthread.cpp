@@ -25,6 +25,8 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <map>
+#include <mutex>
 #include <bit>
 #include <cerrno>
 #include <chrono>
@@ -4091,11 +4093,33 @@ uint64_t KYTY_SYSV_ABI KernelGetTscFrequency() {
 	return KernelGetTscFrequencyNative();
 }
 
+// KYTY_TIME_CENSUS=1: every 5 s prints, per time API, the guest return addresses that called it (call counts per interval).
+void TimeCensus(const char* api, const void* ret) {
+	static const bool enabled = std::getenv("KYTY_TIME_CENSUS") != nullptr;
+	if (!enabled) return;
+	static std::mutex                                                    mutex;
+	static std::map<std::pair<std::string, uintptr_t>, uint64_t>        counts;
+	static std::chrono::steady_clock::time_point                        last = std::chrono::steady_clock::now();
+	std::lock_guard<std::mutex>                                          lock(mutex);
+	counts[{api, reinterpret_cast<uintptr_t>(ret)}]++;
+	const auto now = std::chrono::steady_clock::now();
+	if (now - last < std::chrono::seconds(5)) return;
+	last = now;
+	for (auto& [key, count]: counts) {
+		std::printf("TimeCensus %s ret=%llx rva=%llx x%llu\n", key.first.c_str(), static_cast<unsigned long long>(key.second),
+		            static_cast<unsigned long long>(key.second - 0x900000000ull), static_cast<unsigned long long>(count));
+	}
+	std::fflush(stdout);
+	counts.clear();
+}
+
 uint64_t KYTY_SYSV_ABI KernelReadTsc() {
+	TimeCensus("ReadTsc", __builtin_return_address(0));
 	return KernelReadTscNative();
 }
 
 uint64_t KYTY_SYSV_ABI KernelGetProcessTime() {
+	TimeCensus("GetProcessTime", __builtin_return_address(0));
 	const auto frequency = KernelGetTscFrequencyNative();
 	if (frequency == 0) {
 		return static_cast<uint64_t>(Loader::Timer::GetTimeMs() * 1000.0);
@@ -4107,6 +4131,7 @@ uint64_t KYTY_SYSV_ABI KernelGetProcessTime() {
 }
 
 uint64_t KYTY_SYSV_ABI KernelGetProcessTimeCounter() {
+	TimeCensus("GetProcessTimeCounter", __builtin_return_address(0));
 	return KernelGetElapsedTsc();
 }
 
