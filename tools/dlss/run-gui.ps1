@@ -9,7 +9,7 @@
 #   Plain emulator               no DLSS at all
 # A game's patch file (the community "Fixed render resolution", renderer, LOD... mods) is chosen with the Patch box; a file
 # named patches\<title id>.json next to this script is picked up by itself.
-param([switch]$ParseOnly)
+param([switch]$ParseOnly, [int]$AutoClose = 0)
 $ErrorActionPreference = 'Stop'
 # Any error is written to _dlss\launcher-crash.txt and shown in a message box (the window is started hidden).
 trap {
@@ -92,6 +92,8 @@ function Get-GameLabel($g) {
 }
 
 function New-Game([string]$path) {
+	$resolved = Resolve-GamePath $path
+	if ($resolved) { $path = $resolved }
 	$title = Get-TitleId $path
 	$g = @{ path = $path; title = $title; profile = (Get-ProfileKeyForTitle $title); lateDlss = 0; frameGen = 1; dlssPreset = 'M'
 		windowed = $false; patch = ''; set = ''; emuArgs = ''; live = $false }
@@ -136,6 +138,15 @@ function Load-Config {
 			foreach ($name in @('lateDlss', 'frameGen')) { if ($null -ne $item.$name) { $g[$name] = [int]$item.$name } }
 			foreach ($name in @('windowed', 'live')) { if ($null -ne $item.$name) { $g[$name] = [bool]$item.$name } }
 			if (!$script:profiles.Contains($g.profile)) { $g.profile = 'framegen' }
+			if (!$item.title) {
+				# A game saved without a title id (an older version): find it again and take its profile.
+				$g.title = Get-TitleId $g.path
+				if ($g.title) {
+					Apply-Profile $g (Get-ProfileKeyForTitle $g.title)
+					$auto = Join-Path $script:root ("patches\" + $g.title + '.json')
+					if (!$g.patch -and (Test-Path -LiteralPath $auto)) { $g.patch = $auto }
+				}
+			}
 			[void]$script:games.Add($g)
 		}
 	} catch { }
@@ -182,7 +193,7 @@ $form.StartPosition = 'CenterScreen'
 
 function Add-Label([string]$text, [int]$x, [int]$y, [int]$w = 120) {
 	$c = New-Object System.Windows.Forms.Label
-	$c.Text = $text; $c.Location = New-Object System.Drawing.Point($x, $y + 3); $c.Size = New-Object System.Drawing.Size($w, 20)
+	$c.Text = $text; $c.Location = New-Object System.Drawing.Point($x, ($y + 3)); $c.Size = New-Object System.Drawing.Size($w, 20)
 	$form.Controls.Add($c); return $c
 }
 function Add-Control($c, [int]$x, [int]$y, [int]$w, [int]$h = 24) {
@@ -478,4 +489,14 @@ if ($ParseOnly) { return }
 Load-Config
 Refill-Games $script:lastGame
 if ($script:games.Count -eq 0) { $status.Text = "Add a game with 'Add folder...' or 'Add .zar...'." }
+# -AutoClose <seconds>: closes the window by itself (a test); _dlss\launcher-selftest.txt says it was shown.
+$form.Add_Shown({
+	if ($AutoClose -gt 0) {
+		Set-Content -LiteralPath (Join-Path $script:state 'launcher-selftest.txt') -Value ("shown $(Get-Date -Format 'HH:mm:ss'); games: $($script:games.Count)`r`n$($gameBox.Text)`r`nprofile: $($profileBox.Text)`r`n$($preview.Text)")
+		$closer = New-Object System.Windows.Forms.Timer
+		$closer.Interval = $AutoClose * 1000
+		$closer.Add_Tick({ $form.Close() })
+		$closer.Start()
+	}
+})
 [void]$form.ShowDialog()
