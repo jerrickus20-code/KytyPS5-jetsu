@@ -3771,7 +3771,8 @@ void LateDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const S
 	    {"output", g_late_images[g_late_slot].image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eShaderReadOnlyOptimal,
 	     g_late_images[g_late_slot].extent.width, g_late_images[g_late_slot].extent.height, 8, vk::ImageUsageFlagBits::eTransferSrc},
 	    {"motion", g_late_motion.image, vk::ImageAspectFlagBits::eColor, vk::ImageLayout::eShaderReadOnlyOptimal,
-	     g_late_motion.extent.width, g_late_motion.extent.height, 4, vk::ImageUsageFlagBits::eTransferSrc},
+	     g_late_motion.extent.width, g_late_motion.extent.height, DumpFormatBytes(g_late_motion.format),
+	     vk::ImageUsageFlagBits::eTransferSrc},
 	    {"depth", g_late_depth.image, vk::ImageAspectFlagBits::eDepth, vk::ImageLayout::eShaderReadOnlyOptimal,
 	     g_late_depth.extent.width, g_late_depth.extent.height, 4, vk::ImageUsageFlagBits::eTransferSrc},
 	};
@@ -3796,7 +3797,7 @@ void LateDumpRecord(GraphicContext& graphics, vk::CommandBuffer command, const S
 		const vk::DeviceSize depth_size = static_cast<vk::DeviceSize>(g_late_depth.extent.width) * g_late_depth.extent.height * 4u;
 		g_late_dump.parts.push_back({"nextdepth", total, depth_size, g_late_depth.extent.width, g_late_depth.extent.height});
 		total += (depth_size + 255u) / 256u * 256u;
-		const vk::DeviceSize motion_size = static_cast<vk::DeviceSize>(g_late_motion.extent.width) * g_late_motion.extent.height * 4u;
+		const vk::DeviceSize motion_size = static_cast<vk::DeviceSize>(g_late_motion.extent.width) * g_late_motion.extent.height * DumpFormatBytes(g_late_motion.format);
 		g_late_dump.parts.push_back({"nextmotion", total, motion_size, g_late_motion.extent.width, g_late_motion.extent.height});
 		total += (motion_size + 255u) / 256u * 256u;
 	}
