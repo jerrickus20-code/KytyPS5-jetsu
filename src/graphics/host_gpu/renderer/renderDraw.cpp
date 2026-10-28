@@ -4451,7 +4451,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				const auto   scene_view = from_input ? m_late_input_view : binding.image_view;
 				m_late_input_id   = {};
 				m_late_input_view = nullptr;
-				if (!image.info.IsDepth() && scene_view != nullptr) {
+				// (with a late_input_shader a frame whose input draw was not seen is left unscaled, not scaled from the composite's own, larger picture)
+				if (!image.info.IsDepth() && scene_view != nullptr && (::GameProfile::Current().late_input_shader == 0 || from_input)) {
 					buffer.EndRendering();
 					const auto native = buffer.Handle();
 					image.Transit(vk::ImageLayout::eShaderReadOnlyOptimal, vk::AccessFlagBits2::eShaderRead, std::nullopt,
