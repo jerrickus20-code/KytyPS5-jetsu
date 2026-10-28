@@ -55,8 +55,22 @@ post-processing (bloom, depth of field, tonemap) still runs at 720p before the D
 or 2432x1368 as its dynamic resolution moves) to 1440p, frame generation, and the F4 30 fps cap at the game's normal speed.
 The game's own temporal upscaler is a pixel shader (`late_input_shader`): its render-size colour (slot 1) is what DLSS
 upscales, and the result replaces the final composite's scene (`composite_shader`, slot 0). The G-buffer's depth and motion
-vectors come from `direct_motion_target`. A size change inside the same DLSS mode keeps DLSS's history. The render size
-itself is not lowered to 720p yet (the game uses its size in many places; a single patch of its size getter crashes the GPU).
+vectors come from `direct_motion_target`. A size change inside the same DLSS mode keeps DLSS's history. The input draw is
+captured also when it continues a draw run, so `KYTY_DRAW_RUN` stays at its default. The render size itself is not lowered to
+720p (the game uses its size in many places; a single patch of its size getter crashes the GPU).
+
+Speed on an RTX 4060 laptop: it holds 30 fps nearly everywhere with preset K and the community patch file's mods "Select the
+existing non-tiled deferred-lighting renderer", "Disable GI probes and lighting shaders", "Fixed render resolution 1920x1080"
+and "Models: lower detail (LOD x0.5)" (GPU about 23 ms to 14 ms per frame; the patch file is not part of this repository, see
+`run-astrobot-latedlss.cmd`). In grass-heavy areas (about 5000 draws a frame, 31 G-buffer passes) the frame is limited by the CPU
+feeding the GPU and by about 22 ms of GPU work, and the rate dips to 22-28 fps. The game's time step then follows the real
+frame time (`KYTY_ASTRO_DYNAMIC_DT`, lowest followed rate `KYTY_ASTRO_DT_FLOOR`, default 12 fps), so a dip is not slow motion.
+The measurements that led here: late DLSS costs about 2-3 fps in the heavy area, the texture mip and 2K-texture mods about 1-2 fps
+with a visible quality cost, and reserving a core for the recorder thread (`KYTY_CPU_RESERVE=cp+recorder`) showed no gain.
+
+Tuning without restarting the game (`KYTY_LIVE_PATCH`, `KYTY_PACE_LOG`, `KYTY_THREAD_PROFILE` below): the live switch applies or
+reverts any mod of the patch file in the running game and writes a marker into `<pace log>.marks.csv`, so windows of the pace
+log can be compared per setting.
 
 ## Switches
 
@@ -67,12 +81,15 @@ itself is not lowered to 720p yet (the game uses its size in many places; a sing
 | `KYTY_LATE_DLSS_AA=1` | The game's TAA is not run; DLSS anti-aliases the jittered picture as well. |
 | `KYTY_LATE_DLSS_HDR=1` | The picture handed to DLSS is HDR (default SDR). |
 | `KYTY_DLSS_PRESET=<A-O>` | The DLSS preset (`M`, `K`...). |
+| `KYTY_LIVE_PATCH=<file>` | Switch the game patch file's mods on/off while the game runs: one command per line in `<file>` (read about 2.5 times a second, then renamed to `<file>.done`): `<mod number or part of its name> on\|off\|toggle`, `list`, `mark <label>`. Answers in `<file>.result`, the mod list in `<file>.list`. Mods that need the game to rebuild state (renderer, resolution) may not take effect until the next scene. |
+| `KYTY_THREAD_PROFILE=<file>` | Every 2 s, the busiest threads' CPU use (percent of one core) and the guest frame rate, with the guest thread's name. |
+| `KYTY_ASTRO_DYNAMIC_DT=0` | ASTRO BOT: the game's time step stays at the capped rate (below it the game slows down). Default: it follows the real frame time down to `KYTY_ASTRO_DT_FLOOR` fps (default 12). |
 | `KYTY_PROFILE_DISCOVER=1` | Logs what a game profile needs (`-Discover`). |
 | `KYTY_PROFILE_DIR=<folder>` | Where the game profiles are (default: `profiles` next to the emulator). |
 
 ## Known limits of this step
 
 - Late DLSS keeps the game's 4K output: DLSS's 2560x1440 picture is stretched to 4K by the game's own final composite and scaled to the screen. The game's own 1440p output mode, the cheat keys and the give items panel of jerrickus20-code/KytyPS5 are not ported yet.
-- If the game's final composite continues one of Jetsku's draw runs (`KYTY_DRAW_RUN`), its picture is not upscaled for that frame; the log says `Late DLSS: the final composite continued a draw run`. Then try `-Set KYTY_DRAW_RUN=0`.
+- If the game's final composite continues one of Jetsku's draw runs (`KYTY_DRAW_RUN`), its picture is not upscaled for that frame; the log says `Late DLSS: the final composite continued a draw run`. Then try `-Set KYTY_DRAW_RUN=0` (ASTRO BOT needs it no longer).
 - The render size patch of Demon's Souls knows 01.007.000 and 01.005.000; other games change their render size through their profile's patches (none yet), and without them the log says `ignored: no game profile with render size patches`.
 - The window is stretched to the screen as Jetsku does (no aspect-fit option).
