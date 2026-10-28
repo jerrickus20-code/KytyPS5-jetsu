@@ -72,6 +72,17 @@ Tuning without restarting the game (`KYTY_LIVE_PATCH`, `KYTY_PACE_LOG`, `KYTY_TH
 reverts any mod of the patch file in the running game and writes a marker into `<pace log>.marks.csv`, so windows of the pace
 log can be compared per setting.
 
+## Launcher window
+
+`run-gui.cmd` (double-click) opens a window to choose the game and its profile instead of typing arguments. Add games with
+"Add folder..." (the folder with `eboot.bin`) or "Add .zar..."; the title id is read from `sce_sys\param.sfo` (or the path) and picks
+the profile: ASTRO BOT (late DLSS 1080p to 1440p, preset K), Astro's Playroom (720p to 1440p, preset M), Demon's Souls, frame
+generation only, or the plain emulator. Late DLSS size, DLSS preset, frame generation, windowed, the patch file (a file
+`patches\<title id>.json` next to the scripts is picked up by itself), the Streamline folder, extra `KYTY_*` settings and emulator
+arguments can be changed, and the command it will run is shown. Each game's settings are remembered in `_dlss\launcher.json`.
+Launch starts `run-dlss.ps1` hidden (its output goes to `_dlss\run.log`; a window reports an early failure), Stop ends the game.
+"Live patch switch" sets `KYTY_LIVE_PATCH`.
+
 ## Switches
 
 | Switch | What it does |
